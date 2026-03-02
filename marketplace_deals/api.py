@@ -5,6 +5,8 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+from marketplace_deals.codex_launcher import run_codex_organizer
+from marketplace_deals.config import PROJECT_ROOT
 from marketplace_deals.cex import scrape_cex_prices
 from marketplace_deals.facebook import scrape_facebook_marketplace
 from marketplace_deals.ip_info import return_ip_information as get_ip_information
@@ -117,6 +119,14 @@ def create_app() -> FastAPI:
             date_listed=date_listed,
         )
         saved_files = save_raw_facebook_results(facebook_results)
+        codex_meta: Dict[str, Any] = {}
+        try:
+            codex_meta = run_codex_organizer(PROJECT_ROOT)
+        except Exception as exc:
+            raise HTTPException(502, f"Codex organizer failed: {exc}") from exc
+        organized_path = codex_meta.get("organized_path", "")
+        if organized_path:
+            saved_files["organized_facebook_json_path"] = organized_path
 
         is_cex_enabled = cex_pipeline_enabled()
         cex_results: List[Dict[str, Any]] = []
@@ -168,6 +178,7 @@ def create_app() -> FastAPI:
                 "profitable_deals": len(opportunities),
             },
             "scan_meta": scan_meta,
+            "codex": codex_meta,
             "files": saved_files,
             "results": facebook_results,
             "opportunities": opportunities,
