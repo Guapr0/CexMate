@@ -19,9 +19,9 @@ from marketplace_deals.text_utils import (
     build_marketplace_url,
     normalize_condition_filters,
     normalize_date_listed,
+    normalize_radius_km,
     parse_best_price,
     parse_facebook_card_text,
-    smart_match,
 )
 
 
@@ -271,13 +271,14 @@ def scrape_facebook_marketplace(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     condition_values = normalize_condition_filters(condition_filters or [])
     date_listed_value = normalize_date_listed(date_listed)
+    radius_value = normalize_radius_km(radius_km)
 
     marketplace_url = build_marketplace_url(
         city_slug,
         query,
         min_price,
         max_price,
-        radius_km=radius_km,
+        radius_km=radius_value,
         sort_by=sort_by,
         condition_filters=condition_values,
         date_listed=date_listed_value,
@@ -302,7 +303,7 @@ def scrape_facebook_marketplace(
         "cards_processed": 0,
         "browser_mode": mode,
         "browser_profile_dir": str(profile_path) if profile_path else "",
-        "radius_km": int(radius_km) if radius_km else 0,
+        "radius_km": radius_value,
         "sort_by": sort_by,
         "condition_filters": condition_values,
         "date_listed": date_listed_value,
@@ -474,13 +475,6 @@ def scrape_facebook_marketplace(
                 raw_text = card.get("text") or ""
                 title, description, price_text, location, recency = parse_facebook_card_text(raw_text)
                 if not title:
-                    human_pause(scan_delay_min, scan_delay_max)
-                    continue
-
-                if not smart_match(f"{title} {raw_text}", query, spec):
-                    if interactive_browser:
-                        highlight_marketplace_item(page, extract_marketplace_item_id(href), accepted=False)
-                        human_pause(0.18, 0.35)
                     human_pause(scan_delay_min, scan_delay_max)
                     continue
 

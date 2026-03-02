@@ -6,7 +6,7 @@ import streamlit as st
 
 API_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_PROFILE_DIR = ".browser_profile/chrome_marketplace"
-RADIUS_OPTIONS = [1, 2, 5, 10, 20, 40, 60, 80, 100, 250, 500]
+RADIUS_OPTIONS = [1, 2, 5, 10, 20, 40, 65, 100, 250, 500]
 
 COUNTRY_CURRENCIES = {
     "United Kingdom": ("GBP", "£"),
@@ -314,7 +314,6 @@ if submitted:
     results = payload.get("results", [])
     opportunities = payload.get("opportunities", [])
     files = payload.get("files", {})
-    scan_meta = payload.get("scan_meta", {})
 
     push_update(f"{counts.get('facebook_matches', 0)} matching products found.")
     if is_cex_enabled:
@@ -323,8 +322,10 @@ if submitted:
     else:
         push_update("CeX comparison is temporarily deactivated. Showing Facebook results only.")
     push_update("Saving output files.")
-    if files.get("json_path") or files.get("csv_path") or files.get("html_path"):
-        push_update("Output files saved.")
+    if files.get("raw_facebook_json_path"):
+        push_update("Raw Facebook output saved.")
+    if files.get("deals_json_path") or files.get("deals_csv_path"):
+        push_update("Deal comparison output saved.")
     push_update("Scan finished.")
 
     st.subheader("Scan Summary")
@@ -335,17 +336,7 @@ if submitted:
     if not is_cex_enabled:
         st.caption("CeX scraping and deal comparison are temporarily deactivated.")
 
-    with st.expander("Scan Meta"):
-        st.write(f"Login prompted: {scan_meta.get('login_prompted', False)}")
-        st.write(f"Browser mode: {scan_meta.get('browser_mode', 'chrome_persistent')}")
-        st.write(f"Radius (km): {scan_meta.get('radius_km', radius_km)}")
-        st.write(f"Sort: {scan_meta.get('sort_by', sort_by)}")
-        conditions_meta = scan_meta.get("condition_filters", [])
-        st.write(f"Condition filters: {', '.join(conditions_meta) if conditions_meta else 'none'}")
-        st.write(f"Date listed: {scan_meta.get('date_listed', DATE_LISTED_OPTIONS[date_listed_label])}")
-        st.write(f"Raw cards seen: {scan_meta.get('raw_cards_seen', 0)}")
-        st.write(f"Cards accepted: {scan_meta.get('cards_processed', 0)}")
-        st.write(pipeline.get("cex_note", ""))
+    st.caption(pipeline.get("cex_note", ""))
 
     if is_cex_enabled and opportunities:
         st.subheader("Top Opportunities")
@@ -378,44 +369,43 @@ if submitted:
     elif not results:
         st.info("No Facebook listings matched your filters. Try adjusting query, location, or price range.")
     else:
-        st.info(
-            f"{len(results)} Facebook listings matched. Use the output files section below to download JSON, CSV, or HTML."
-        )
+        st.info(f"{len(results)} Facebook listings matched. Raw results are available as JSON below.")
 
     st.subheader("Output Files")
-    json_path = files.get("json_path")
-    csv_path = files.get("csv_path")
-    html_path = files.get("html_path")
+    raw_json_path = files.get("raw_facebook_json_path")
+    deals_json_path = files.get("deals_json_path")
+    deals_csv_path = files.get("deals_csv_path")
 
-    if json_path:
-        st.write(f"JSON: {json_path}")
-    if csv_path:
-        st.write(f"CSV: {csv_path}")
-    if html_path:
-        st.write(f"HTML: {html_path}")
+    if raw_json_path:
+        st.write(f"Raw Facebook JSON: {raw_json_path}")
+    if deals_json_path:
+        st.write(f"Deals JSON: {deals_json_path}")
+    if deals_csv_path:
+        st.write(f"Deals CSV: {deals_csv_path}")
 
-    if json_path and Path(json_path).exists():
-        with open(json_path, "rb") as jf:
+    if raw_json_path and Path(raw_json_path).exists():
+        with open(raw_json_path, "rb") as jf:
             st.download_button(
-                label="Download JSON",
+                label="Download Raw Facebook JSON",
                 data=jf,
-                file_name=Path(json_path).name,
+                file_name=Path(raw_json_path).name,
                 mime="application/json",
             )
 
-    if csv_path and Path(csv_path).exists():
-        with open(csv_path, "rb") as cf:
+    if deals_json_path and Path(deals_json_path).exists():
+        with open(deals_json_path, "rb") as djf:
             st.download_button(
-                label="Download CSV",
-                data=cf,
-                file_name=Path(csv_path).name,
-                mime="text/csv",
+                label="Download Deals JSON",
+                data=djf,
+                file_name=Path(deals_json_path).name,
+                mime="application/json",
             )
-    if html_path and Path(html_path).exists():
-        with open(html_path, "rb") as hf:
+
+    if deals_csv_path and Path(deals_csv_path).exists():
+        with open(deals_csv_path, "rb") as cf:
             st.download_button(
-                label="Download HTML",
-                data=hf,
-                file_name=Path(html_path).name,
-                mime="text/html",
+                label="Download Deals CSV",
+                data=cf,
+                file_name=Path(deals_csv_path).name,
+                mime="text/csv",
             )

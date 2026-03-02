@@ -26,6 +26,7 @@ ALLOWED_DATE_LISTED = {
     "7",
     "30",
 }
+ALLOWED_RADIUS_KM = [1, 2, 5, 10, 20, 40, 65, 100, 250, 500]
 
 CURRENCY_PRICE_PATTERN = re.compile(
     r"[£$€�]\s*(\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"
@@ -192,6 +193,21 @@ def normalize_date_listed(date_listed: str) -> str:
     return value
 
 
+def normalize_radius_km(radius_km: int) -> int:
+    try:
+        requested = int(radius_km)
+    except (TypeError, ValueError):
+        return 0
+
+    if requested <= 0:
+        return 0
+    if requested in ALLOWED_RADIUS_KM:
+        return requested
+
+    # Facebook Marketplace supports discrete radius values; use nearest supported value.
+    return min(ALLOWED_RADIUS_KM, key=lambda option: abs(option - requested))
+
+
 def _looks_like_recency(line: str) -> bool:
     value = (line or "").strip().lower()
     if not value:
@@ -322,14 +338,15 @@ def build_marketplace_url(
     sort_value = normalize_sort_by(sort_by)
     conditions = normalize_condition_filters(condition_filters or [])
     date_value = normalize_date_listed(date_listed)
+    radius_value = normalize_radius_km(radius_km)
 
-    query_params: List[Tuple[str, str]] = [("query", query)]
+    query_params: List[Tuple[str, str]] = [("query", query), ("exact", "false")]
     if min_price > 0:
         query_params.append(("minPrice", str(int(min_price))))
     if max_price > 0:
         query_params.append(("maxPrice", str(int(max_price))))
-    if radius_km and int(radius_km) > 0:
-        query_params.append(("radiusKM", str(int(radius_km))))
+    if radius_value > 0:
+        query_params.append(("radiusKM", str(radius_value)))
     if sort_value != "suggested":
         query_params.append(("sortBy", sort_value))
     if conditions:

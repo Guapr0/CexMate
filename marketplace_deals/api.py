@@ -9,7 +9,7 @@ from marketplace_deals.cex import scrape_cex_prices
 from marketplace_deals.facebook import scrape_facebook_marketplace
 from marketplace_deals.ip_info import return_ip_information as get_ip_information
 from marketplace_deals.matching import compare_marketplace_vs_cex
-from marketplace_deals.storage import save_deals, save_facebook_results
+from marketplace_deals.storage import save_deals, save_raw_facebook_results
 from marketplace_deals.text_utils import resolve_marketplace_slug
 
 
@@ -116,6 +116,7 @@ def create_app() -> FastAPI:
             condition_filters=condition_filters,
             date_listed=date_listed,
         )
+        saved_files = save_raw_facebook_results(facebook_results)
 
         is_cex_enabled = cex_pipeline_enabled()
         cex_results: List[Dict[str, Any]] = []
@@ -130,9 +131,13 @@ def create_app() -> FastAPI:
                 challenge_timeout=manual_login_timeout,
             )
             opportunities = compare_marketplace_vs_cex(facebook_results, cex_results)
-            saved_files = save_deals(query, city_slug, opportunities)
-        else:
-            saved_files = save_facebook_results(query, city_slug, facebook_results)
+            deal_files = save_deals(query, city_slug, opportunities)
+            saved_files.update(
+                {
+                    "deals_json_path": deal_files.get("json_path", ""),
+                    "deals_csv_path": deal_files.get("csv_path", ""),
+                }
+            )
 
         return {
             "search": {
