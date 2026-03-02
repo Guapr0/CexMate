@@ -310,6 +310,7 @@ if submitted:
     payload = response.json()
     counts = payload.get("counts", {})
     pipeline = payload.get("pipeline", {})
+    codex_meta = payload.get("codex", {})
     is_cex_enabled = pipeline.get("cex_enabled", False)
     results = payload.get("results", [])
     opportunities = payload.get("opportunities", [])
@@ -319,11 +320,19 @@ if submitted:
     if is_cex_enabled:
         push_update(f"{counts.get('cex_candidates', 0)} CeX candidates loaded.")
         push_update(f"{counts.get('profitable_deals', 0)} profitable opportunities identified.")
-    else:
-        push_update("CeX comparison is temporarily deactivated. Showing Facebook results only.")
     push_update("Saving output files.")
     if files.get("raw_facebook_json_path"):
         push_update("Raw Facebook output saved.")
+    if codex_meta.get("launched_cmd_window"):
+        push_update("Codex organizer cmd window launched.")
+    if files.get("organized_facebook_json_path"):
+        organized_count = codex_meta.get("organized_count")
+        if isinstance(organized_count, int):
+            push_update(f"Organized Facebook output saved ({organized_count} items).")
+        else:
+            push_update("Organized Facebook output saved.")
+    if codex_meta and not codex_meta.get("strict_done_met", False):
+        push_update("Codex finished with a non-DONE final message, but organized output validated successfully.")
     if files.get("deals_json_path") or files.get("deals_csv_path"):
         push_update("Deal comparison output saved.")
     push_update("Scan finished.")
@@ -333,10 +342,6 @@ if submitted:
     c1.metric("Facebook Matches", counts.get("facebook_matches", 0))
     c2.metric("CeX Candidates", counts.get("cex_candidates", 0) if is_cex_enabled else 0)
     c3.metric("Profitable Deals", counts.get("profitable_deals", 0) if is_cex_enabled else 0)
-    if not is_cex_enabled:
-        st.caption("CeX scraping and deal comparison are temporarily deactivated.")
-
-    st.caption(pipeline.get("cex_note", ""))
 
     if is_cex_enabled and opportunities:
         st.subheader("Top Opportunities")
@@ -373,11 +378,14 @@ if submitted:
 
     st.subheader("Output Files")
     raw_json_path = files.get("raw_facebook_json_path")
+    organized_json_path = files.get("organized_facebook_json_path")
     deals_json_path = files.get("deals_json_path")
     deals_csv_path = files.get("deals_csv_path")
 
     if raw_json_path:
         st.write(f"Raw Facebook JSON: {raw_json_path}")
+    if organized_json_path:
+        st.write(f"Organized Facebook JSON: {organized_json_path}")
     if deals_json_path:
         st.write(f"Deals JSON: {deals_json_path}")
     if deals_csv_path:
@@ -389,6 +397,15 @@ if submitted:
                 label="Download Raw Facebook JSON",
                 data=jf,
                 file_name=Path(raw_json_path).name,
+                mime="application/json",
+            )
+
+    if organized_json_path and Path(organized_json_path).exists():
+        with open(organized_json_path, "rb") as of:
+            st.download_button(
+                label="Download Organized Facebook JSON",
+                data=of,
+                file_name=Path(organized_json_path).name,
                 mime="application/json",
             )
 
