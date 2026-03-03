@@ -26,7 +26,7 @@ ALLOWED_DATE_LISTED = {
     "7",
     "30",
 }
-ALLOWED_RADIUS_KM = [1, 2, 5, 10, 20, 40, 65, 100, 250, 500]
+ALLOWED_RADIUS_KM = [1, 2, 5, 10, 20, 40, 60, 100, 250, 500]
 
 CURRENCY_PRICE_PATTERN = re.compile(
     r"[£$€�]\s*(\d{1,3}(?:[,\s]\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)"

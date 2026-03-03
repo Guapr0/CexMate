@@ -6,7 +6,7 @@ import streamlit as st
 
 API_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_PROFILE_DIR = ".browser_profile/chrome_marketplace"
-RADIUS_OPTIONS = [1, 2, 5, 10, 20, 40, 65, 100, 250, 500]
+RADIUS_OPTIONS = [1, 2, 5, 10, 20, 40, 60, 100, 250, 500]
 
 COUNTRY_CURRENCIES = {
     "United Kingdom": ("GBP", "£"),
