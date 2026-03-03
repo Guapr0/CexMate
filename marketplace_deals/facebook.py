@@ -155,21 +155,71 @@ def extract_listing_details(page: Any, listing_url: str, timeout_ms: int = 20000
             """
             () => {
               const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+              const isPriceOnly = (value) => {
+                const text = clean(value);
+                if (!text || !/[£$€]/.test(text)) return false;
+                const match = text.match(/[£$€]\\s?\\d[\\d,]*(?:\\.\\d{1,2})?/);
+                if (!match) return false;
+                const residual = text
+                  .replace(/[£$€]\\s?\\d[\\d,]*(?:\\.\\d{1,2})?/g, '')
+                  .replace(/[\\s.,:/()\\-]/g, '');
+                return residual.length === 0;
+              };
+              const extractPriceFromText = (value) => {
+                const text = clean(value);
+                if (!text) return '';
+                const match = text.match(/[£$€]\\s?\\d[\\d,]*(?:\\.\\d{1,2})?/);
+                return match ? clean(match[0]) : '';
+              };
+              const extractRecencyFromText = (value) => {
+                const text = clean(value);
+                if (!text) return '';
+                const match = text.match(
+                  /(just now|today|yesterday|a\\s+minute\\s+ago|an\\s+hour\\s+ago|a\\s+day\\s+ago|a\\s+week\\s+ago|a\\s+month\\s+ago|a\\s+year\\s+ago|\\d+\\s*(?:min|mins|minute|minutes|hr|hrs|hour|hours|day|days|week|weeks|month|months|year|years)\\s+ago)/i
+                );
+                return match ? clean(match[1]) : '';
+              };
               const bodyText = document.body ? (document.body.innerText || '') : '';
               const lines = bodyText.split('\\n').map((line) => clean(line)).filter(Boolean);
 
-              const titleNode = document.querySelector('h1');
-              const title = clean(titleNode ? titleNode.textContent : '');
+              let title = '';
+              const titleCandidates = [
+                clean(document.querySelector('h1') ? document.querySelector('h1').textContent : ''),
+                clean(document.querySelector('meta[property="og:title"]') ? document.querySelector('meta[property="og:title"]').getAttribute('content') : ''),
+                clean(document.title || ''),
+              ];
+              for (const candidate of titleCandidates) {
+                if (!candidate) continue;
+                const normalized = candidate
+                  .replace(/\\s*\\|\\s*Facebook\\s*$/i, '')
+                  .replace(/\\s*-\\s*Marketplace\\s*$/i, '')
+                  .trim();
+                if (!normalized) continue;
+                if (isPriceOnly(normalized)) continue;
+                title = clean(normalized);
+                break;
+              }
 
               let price = '';
-              const priceNodes = Array.from(document.querySelectorAll('div,span,p'));
+              const priceNodes = Array.from(document.querySelectorAll('div,span,p,strong,h2,h3'));
               for (const node of priceNodes) {
                 const value = clean(node.textContent || '');
-                if (!value || value.length > 30) continue;
-                if (!/[£$€]/.test(value)) continue;
-                if (!/^([£$€])\\s?\\d/.test(value)) continue;
-                price = value;
+                if (!value || value.length > 45) continue;
+                const extracted = extractPriceFromText(value);
+                if (!extracted) continue;
+                price = extracted;
                 break;
+              }
+              if (!price) {
+                const ogDescription = clean(
+                  document.querySelector('meta[property="og:description"]')
+                    ? document.querySelector('meta[property="og:description"]').getAttribute('content')
+                    : ''
+                );
+                price = extractPriceFromText(ogDescription);
+              }
+              if (!price) {
+                price = extractPriceFromText(bodyText);
               }
 
               let recency = '';
@@ -177,18 +227,12 @@ def extract_listing_details(page: Any, listing_url: str, timeout_ms: int = 20000
               for (const line of lines) {
                 if (!/^listed\\s+/i.test(line)) continue;
                 recencyRaw = line;
-                const m = line.match(
-                  /listed\\s+(.+?)(?:\\s+in\\s+.+)?$/i
-                );
-                recency = m && m[1] ? clean(m[1]) : clean(line.replace(/^listed\\s+/i, ''));
+                recency = extractRecencyFromText(line);
                 break;
               }
 
               if (!recency) {
-                const m = bodyText.match(
-                  /(a\\s+minute\\s+ago|an\\s+hour\\s+ago|a\\s+day\\s+ago|a\\s+week\\s+ago|a\\s+month\\s+ago|a\\s+year\\s+ago|\\d+\\s*(?:min|mins|minute|minutes|hr|hrs|hour|hours|day|days|week|weeks|month|months|year|years)\\s+ago|today|yesterday)/i
-                );
-                if (m) recency = clean(m[1]);
+                recency = extractRecencyFromText(bodyText);
               }
 
               let description = '';
@@ -220,6 +264,10 @@ def extract_listing_details(page: Any, listing_url: str, timeout_ms: int = 20000
               if (!description) {
                 const og = document.querySelector('meta[property="og:description"]');
                 if (og) description = clean(og.getAttribute('content'));
+              }
+
+              if (!title || isPriceOnly(title)) {
+                title = '';
               }
 
               return { title, price, description, recency, recency_raw: recencyRaw };
@@ -477,12 +525,37 @@ def scrape_facebook_marketplace(
                     human_pause(scan_delay_min, scan_delay_max)
                     continue
 
+                detail_payload: Dict[str, str] = {}
+
                 price_value = (
                     parse_best_price(price_text, require_currency=True)
                     or parse_best_price(raw_text, require_currency=True)
                     or parse_best_price(price_text)
                     or parse_best_price(raw_text)
                 )
+
+                if price_value is None and fetch_listing_details:
+                    if interactive_browser:
+                        show_browser_banner(
+                            page,
+                            f"Price missing on card, opening listing {seen_order} for price...",
+                            "warn",
+                        )
+                    detail_payload = extract_listing_details(page, full_link, timeout_ms=detail_timeout_ms)
+                    detail_price_text = detail_payload.get("price", "")
+                    if detail_price_text:
+                        price_text = detail_price_text
+                    price_value = (
+                        parse_best_price(detail_price_text, require_currency=True)
+                        or parse_best_price(detail_price_text)
+                    )
+                    detail_title = detail_payload.get("title", "")
+                    if detail_title and looks_like_price_only_text(title):
+                        title = detail_title
+                    description = detail_payload.get("description") or description
+                    recency = detail_payload.get("recency") or recency
+                    human_pause(0.35, 0.85)
+
                 if price_value is None:
                     if interactive_browser:
                         highlight_marketplace_item(page, extract_marketplace_item_id(href), accepted=False)
@@ -506,7 +579,7 @@ def scrape_facebook_marketplace(
                     highlight_marketplace_item(page, extract_marketplace_item_id(href), accepted=True)
                     human_pause(0.12, 0.3)
 
-                if fetch_listing_details:
+                if fetch_listing_details and not detail_payload:
                     if interactive_browser:
                         show_browser_banner(
                             page,
@@ -518,7 +591,7 @@ def scrape_facebook_marketplace(
                     if detail_title and looks_like_price_only_text(title):
                         title = detail_title
                     description = details.get("description") or description
-                    recency = details.get("recency") or details.get("recency_raw") or recency
+                    recency = details.get("recency") or recency
                     human_pause(0.35, 0.85)
 
                 results.append(
