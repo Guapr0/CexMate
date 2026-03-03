@@ -308,14 +308,22 @@ if submitted:
     push_update("Saving output files.")
     if files.get("raw_facebook_json_path"):
         push_update("Raw Facebook output saved.")
-    if codex_meta.get("launched_cmd_window"):
+    if codex_meta.get("launched_cmd_window_organizer"):
         push_update("Codex organizer cmd window launched (it closes automatically when done).")
+    if codex_meta.get("launched_cmd_window_filter"):
+        push_update("Codex filter cmd window launched (it closes automatically when done).")
     if files.get("organized_facebook_json_path"):
         organized_count = codex_meta.get("organized_count")
         if isinstance(organized_count, int):
             push_update(f"Organized Facebook output saved ({organized_count} items).")
         else:
             push_update("Organized Facebook output saved.")
+    if files.get("filtered_facebook_json_path"):
+        filtered_count = codex_meta.get("filtered_count")
+        if isinstance(filtered_count, int):
+            push_update(f"Filtered Facebook output saved ({filtered_count} items).")
+        else:
+            push_update("Filtered Facebook output saved.")
     if codex_meta and not codex_meta.get("strict_done_met", False):
         push_update("Codex finished with a non-DONE final message, but organized output validated successfully.")
     if files.get("deals_json_path") or files.get("deals_csv_path"):
@@ -364,6 +372,7 @@ if submitted:
     st.subheader("Output Files")
     raw_json_path = files.get("raw_facebook_json_path")
     organized_json_path = files.get("organized_facebook_json_path")
+    filtered_json_path = files.get("filtered_facebook_json_path")
     deals_json_path = files.get("deals_json_path")
     deals_csv_path = files.get("deals_csv_path")
 
@@ -371,6 +380,8 @@ if submitted:
         st.write(f"Raw Facebook JSON: {raw_json_path}")
     if organized_json_path:
         st.write(f"Organized Facebook JSON: {organized_json_path}")
+    if filtered_json_path:
+        st.write(f"Filtered Facebook JSON: {filtered_json_path}")
     if deals_json_path:
         st.write(f"Deals JSON: {deals_json_path}")
     if deals_csv_path:
@@ -391,6 +402,15 @@ if submitted:
                 label="Download Organized Facebook JSON",
                 data=of,
                 file_name=Path(organized_json_path).name,
+                mime="application/json",
+            )
+
+    if filtered_json_path and Path(filtered_json_path).exists():
+        with open(filtered_json_path, "rb") as ff:
+            st.download_button(
+                label="Download Filtered Facebook JSON",
+                data=ff,
+                file_name=Path(filtered_json_path).name,
                 mime="application/json",
             )
 

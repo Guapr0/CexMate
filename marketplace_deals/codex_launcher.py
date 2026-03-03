@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 PROMPT_EVERY_RUN = """From the project root, read and analyze `output/raw_facebook_list.json` carefully and accurately. Create/overwrite `output/organized_facebook_list.json` containing a JSON array with one object per listing.
 
@@ -47,16 +47,98 @@ After finishing file creation, respond with exactly:
 DONE"""
 
 
-def _validate_organized_output(path: Path) -> tuple[bool, int, str]:
+FILTER_PROMPT_TEMPLATE = """From the project root, read `output/organized_facebook_list.json`and create `output/filtered_facebook_list.json`.
+
+Apply strict filtering using these exact runtime values:
+- ProductName: "__PRODUCT_NAME__"
+- Price Min: __PRICE_MIN__
+- Price Max: __PRICE_MAX__
+- Date Listed: "__DATE_LISTED__"
+- Filtering Description: "__FILTERING_DESCRIPTION__"
+
+
+FILTERING RULES
+1. A listing passes ONLY if it satisfies ALL provided filters.
+2. If a listing fails even one filter, do not move that listing to the new file..
+3. Do NOT modify any listing fields or values.
+4. Move passed listing objects exactly as they appear in the input.
+
+
+GROUPING RULES
+After filtering, group the remaining listings by EXACT equality of:
+
+- brand
+- model
+- variant
+- storage_gb
+- ram_gb
+- grade
+
+Listings must match all six fields exactly to be in the same group.
+
+
+GROUP TITLE FORMAT
+Format:
+brand + model + variant + storage_gb + "GB, " + grade
+
+Examples:
+- Apple iPhone 15 256GB, A
+- Apple iPhone 15 Pro 128GB, A
+
+Title defaults:
+- If storage_gb is null → use 256 in title only
+- If grade is null → use B in title only
+
+IMPORTANT:
+- Do NOT modify the listing objects.
+- Defaults apply ONLY to group_title.
+
+
+OUTPUT STRUCTURE
+The output must be a JSON array of objects in this format:
+
+[
+  {
+    "group_title": "Apple iPhone 15 256GB, A",
+    "listings": [
+      { full original listing object },
+      { full original listing object },
+    ]
+  }
+]
+
+Do not include any extra fields.
+Do not include explanations.
+Do not include logs.
+Do not include comments.
+
+After writing the file, respond with exactly: DONE"""
+
+
+def _validate_json_output(path: Path, require_array_root: bool = True) -> tuple[bool, int, str]:
     if not path.exists():
         return False, 0, f"missing file: {path}"
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         return False, 0, f"invalid JSON in {path}: {exc}"
-    if not isinstance(payload, list):
-        return False, 0, f"JSON root is not an array in {path}"
-    return True, len(payload), ""
+    if require_array_root:
+        if not isinstance(payload, list):
+            return False, 0, f"JSON root is not an array in {path}"
+        return True, len(payload), ""
+
+    if isinstance(payload, list):
+        return True, len(payload), ""
+    if isinstance(payload, dict):
+        filtered_listings = payload.get("filtered_listings")
+        if isinstance(filtered_listings, list):
+            return True, len(filtered_listings), ""
+        listings = payload.get("listings")
+        if isinstance(listings, list):
+            return True, len(listings), ""
+        return True, 0, ""
+
+    return False, 0, f"JSON root is neither object nor array in {path}"
 
 
 def _resolve_codex_executable() -> str:
@@ -84,9 +166,13 @@ def _resolve_codex_executable() -> str:
     )
 
 
-def _open_status_cmd_window(root: Path, live_log_file: Path, done_signal_file: Path) -> bool:
-    title = "Marketplace Codex Organizer"
-
+def _open_status_cmd_window(
+    root: Path,
+    live_log_file: Path,
+    done_signal_file: Path,
+    title: str,
+    stage_name: str,
+) -> bool:
     def _ps_quote(text: str) -> str:
         return text.replace("'", "''")
 
@@ -97,8 +183,8 @@ def _open_status_cmd_window(root: Path, live_log_file: Path, done_signal_file: P
     ps_command = (
         f"$Host.UI.RawUI.WindowTitle = '{ps_title}'; "
         f"Set-Location -LiteralPath '{ps_root}'; "
-        "Write-Host 'Codex organizer started.'; "
-        "Write-Host 'Streaming organizer output below (window closes automatically when done).'; "
+        f"Write-Host 'Codex {stage_name} started.'; "
+        f"Write-Host 'Streaming {stage_name} output below (window closes automatically when done).'; "
         "Write-Host ''; "
         f"$logPath = '{ps_log}'; "
         f"$donePath = '{ps_done}'; "
@@ -135,30 +221,43 @@ def _open_status_cmd_window(root: Path, live_log_file: Path, done_signal_file: P
         return False
 
 
-def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict[str, Any]:
-    root = project_root.resolve()
-    output_dir = root / "output"
-    output_dir.mkdir(exist_ok=True)
-    raw_file = output_dir / "raw_facebook_list.json"
-    last_message_file = output_dir / "codex_organizer_last_message.txt"
-    organized_file = output_dir / "organized_facebook_list.json"
-    legacy_log_file = output_dir / "codex_organizer_exec.log"
-    codex_executable = _resolve_codex_executable()
+def _format_prompt_number(value: Optional[float]) -> str:
+    if value is None:
+        return "null"
+    return json.dumps(value)
 
-    if not raw_file.exists():
-        raise RuntimeError(f"missing input file: {raw_file}")
 
-    if last_message_file.exists():
-        try:
-            last_message_file.unlink()
-        except Exception:
-            pass
-    if legacy_log_file.exists():
-        try:
-            legacy_log_file.unlink()
-        except Exception:
-            pass
+def _format_prompt_text(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
 
+
+def _render_filter_prompt(
+    product_name: str,
+    price_min: Optional[float],
+    price_max: Optional[float],
+    date_listed: str,
+    filtering_description: str,
+) -> str:
+    return (
+        FILTER_PROMPT_TEMPLATE
+        .replace("__PRODUCT_NAME__", _format_prompt_text(product_name))
+        .replace("__PRICE_MIN__", _format_prompt_number(price_min))
+        .replace("__PRICE_MAX__", _format_prompt_number(price_max))
+        .replace("__DATE_LISTED__", _format_prompt_text(date_listed))
+        .replace("__FILTERING_DESCRIPTION__", _format_prompt_text(filtering_description))
+    )
+
+
+def _run_codex_stage(
+    root: Path,
+    codex_executable: str,
+    prompt_text: str,
+    expected_output_file: Path,
+    require_array_root: bool,
+    window_title: str,
+    stage_name: str,
+    timeout_seconds: int,
+) -> Dict[str, Any]:
     runtime_dir = Path(tempfile.gettempdir()) / "marketplace_codex_organizer"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     stale_before = time.time() - (24 * 60 * 60)
@@ -168,19 +267,27 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
                 stale_file.unlink()
         except Exception:
             continue
-    run_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+
+    run_id = f"{int(time.time() * 1000)}-{os.getpid()}-{stage_name}"
     live_log_file = runtime_dir / f"{run_id}.log"
     done_signal_file = runtime_dir / f"{run_id}.done"
+    last_message_file = runtime_dir / f"{run_id}.lastmsg"
 
-    if done_signal_file.exists():
-        try:
-            done_signal_file.unlink()
-        except Exception:
-            pass
+    for path in (done_signal_file, last_message_file):
+        if path.exists():
+            try:
+                path.unlink()
+            except Exception:
+                pass
 
-    # Ensure the live viewer has a file to stream immediately.
     live_log_file.write_text("", encoding="utf-8")
-    cmd_window_launched = _open_status_cmd_window(root, live_log_file, done_signal_file)
+    cmd_window_launched = _open_status_cmd_window(
+        root=root,
+        live_log_file=live_log_file,
+        done_signal_file=done_signal_file,
+        title=window_title,
+        stage_name=stage_name,
+    )
 
     command = [
         codex_executable,
@@ -206,7 +313,7 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
             bufsize=1,
         )
     except Exception as exc:
-        raise RuntimeError(f"failed to start codex organizer process: {exc}") from exc
+        raise RuntimeError(f"failed to start codex {stage_name} process: {exc}") from exc
 
     output_chunks: list[str] = []
     result_returncode: int | None = None
@@ -214,7 +321,7 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
         try:
             if process.stdin is not None:
                 try:
-                    process.stdin.write(PROMPT_EVERY_RUN)
+                    process.stdin.write(prompt_text)
                 except BrokenPipeError:
                     pass
                 finally:
@@ -222,7 +329,7 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
 
             start_time = time.monotonic()
             if process.stdout is None:
-                raise RuntimeError("codex organizer stdout pipe unavailable")
+                raise RuntimeError(f"codex {stage_name} stdout pipe unavailable")
             with live_log_file.open("a", encoding="utf-8", errors="ignore") as log_handle:
                 while True:
                     if time.monotonic() - start_time > timeout_limit:
@@ -247,7 +354,7 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
                     log_handle.flush()
             result_returncode = process.wait()
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"codex organizer timed out after {timeout_seconds} seconds") from exc
+            raise RuntimeError(f"codex {stage_name} timed out after {timeout_seconds} seconds") from exc
 
         stdout_text = "".join(output_chunks)
 
@@ -258,34 +365,112 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
             except Exception:
                 final_message = ""
 
-        is_valid_output, organized_count, validation_error = _validate_organized_output(organized_file)
+        is_valid_output, output_count, validation_error = _validate_json_output(
+            expected_output_file,
+            require_array_root=require_array_root,
+        )
         if result_returncode is None:
-            raise RuntimeError("codex organizer process did not return an exit code")
+            raise RuntimeError(f"codex {stage_name} process did not return an exit code")
         if result_returncode != 0 and not is_valid_output:
             stdout_tail = (stdout_text or "").strip()[-1200:]
             raise RuntimeError(
-                "codex exec failed with exit code "
-                f"{result_returncode}. {validation_error or 'organized output missing.'}"
+                f"codex {stage_name} failed with exit code "
+                f"{result_returncode}. {validation_error or 'output missing.'}"
                 + (f" Log tail: STDOUT tail: {stdout_tail}" if stdout_tail else "")
             )
         if not is_valid_output:
-            raise RuntimeError(f"codex organizer output invalid: {validation_error}")
+            raise RuntimeError(f"codex {stage_name} output invalid: {validation_error}")
 
         return {
             "launched_cmd_window": cmd_window_launched,
             "return_code": int(result_returncode),
             "final_message": final_message,
             "strict_done_met": final_message == "DONE",
-            "organized_count": organized_count,
-            "organized_path": str(organized_file.resolve()),
+            "output_count": output_count,
+            "output_path": str(expected_output_file.resolve()),
         }
     finally:
         try:
             done_signal_file.write_text("done", encoding="utf-8")
         except Exception:
             pass
+        for path in (live_log_file, done_signal_file, last_message_file):
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+
+
+def run_codex_organizer(
+    project_root: Path,
+    product_name: str,
+    price_min: Optional[float],
+    price_max: Optional[float],
+    date_listed: str,
+    filtering_description: str,
+    timeout_seconds: int = 3600,
+) -> Dict[str, Any]:
+    root = project_root.resolve()
+    output_dir = root / "output"
+    output_dir.mkdir(exist_ok=True)
+    raw_file = output_dir / "raw_facebook_list.json"
+    organized_file = output_dir / "organized_facebook_list.json"
+    filtered_file = output_dir / "filtered_facebook_list.json"
+    legacy_log_file = output_dir / "codex_organizer_exec.log"
+    codex_executable = _resolve_codex_executable()
+
+    if not raw_file.exists():
+        raise RuntimeError(f"missing input file: {raw_file}")
+
+    if legacy_log_file.exists():
         try:
-            if last_message_file.exists():
-                last_message_file.unlink()
+            legacy_log_file.unlink()
         except Exception:
             pass
+
+    organizer_meta = _run_codex_stage(
+        root=root,
+        codex_executable=codex_executable,
+        prompt_text=PROMPT_EVERY_RUN,
+        expected_output_file=organized_file,
+        require_array_root=True,
+        window_title="Marketplace Codex Organizer",
+        stage_name="organizer",
+        timeout_seconds=timeout_seconds,
+    )
+
+    filter_prompt = _render_filter_prompt(
+        product_name=product_name,
+        price_min=price_min,
+        price_max=price_max,
+        date_listed=date_listed,
+        filtering_description=filtering_description,
+    )
+    filter_meta = _run_codex_stage(
+        root=root,
+        codex_executable=codex_executable,
+        prompt_text=filter_prompt,
+        expected_output_file=filtered_file,
+        require_array_root=True,
+        window_title="Marketplace Codex Filter",
+        stage_name="filter",
+        timeout_seconds=timeout_seconds,
+    )
+
+    return {
+        "launched_cmd_window": bool(organizer_meta.get("launched_cmd_window") or filter_meta.get("launched_cmd_window")),
+        "launched_cmd_window_organizer": bool(organizer_meta.get("launched_cmd_window")),
+        "launched_cmd_window_filter": bool(filter_meta.get("launched_cmd_window")),
+        "return_code": int(filter_meta.get("return_code", 0)),
+        "final_message": str(filter_meta.get("final_message", "")),
+        "strict_done_met": bool(
+            organizer_meta.get("strict_done_met", False) and filter_meta.get("strict_done_met", False)
+        ),
+        "strict_done_met_organizer": bool(organizer_meta.get("strict_done_met", False)),
+        "strict_done_met_filter": bool(filter_meta.get("strict_done_met", False)),
+        "organized_count": int(organizer_meta.get("output_count", 0)),
+        "organized_path": str(organizer_meta.get("output_path", str(organized_file.resolve()))),
+        "filtered_count": int(filter_meta.get("output_count", 0)),
+        "filtered_path": str(filter_meta.get("output_path", str(filtered_file.resolve()))),
+    }

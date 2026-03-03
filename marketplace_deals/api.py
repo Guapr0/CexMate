@@ -14,6 +14,13 @@ from marketplace_deals.matching import compare_marketplace_vs_cex
 from marketplace_deals.storage import clear_output_directory, save_deals, save_raw_facebook_results
 from marketplace_deals.text_utils import resolve_marketplace_slug
 
+DATE_LISTED_LABELS = {
+    "all": "All",
+    "1": "Last 24 hours",
+    "7": "Last 7 days",
+    "30": "Last 30 days",
+}
+
 
 def cex_pipeline_enabled() -> bool:
     value = os.getenv("ENABLE_CEX_PIPELINE", "false").strip().lower()
@@ -119,12 +126,22 @@ def create_app() -> FastAPI:
         saved_files = save_raw_facebook_results(facebook_results)
         codex_meta: Dict[str, Any] = {}
         try:
-            codex_meta = run_codex_organizer(PROJECT_ROOT)
+            codex_meta = run_codex_organizer(
+                PROJECT_ROOT,
+                product_name=query.strip(),
+                price_min=min_price if min_price > 0 else None,
+                price_max=max_price if max_price > 0 else None,
+                date_listed=DATE_LISTED_LABELS.get(str(date_listed).strip().lower(), str(date_listed)),
+                filtering_description=spec.strip(),
+            )
         except Exception as exc:
             raise HTTPException(502, f"Codex organizer failed: {exc}") from exc
         organized_path = codex_meta.get("organized_path", "")
         if organized_path:
             saved_files["organized_facebook_json_path"] = organized_path
+        filtered_path = codex_meta.get("filtered_path", "")
+        if filtered_path:
+            saved_files["filtered_facebook_json_path"] = filtered_path
 
         is_cex_enabled = cex_pipeline_enabled()
         cex_results: List[Dict[str, Any]] = []
