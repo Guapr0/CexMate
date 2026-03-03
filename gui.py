@@ -10,25 +10,6 @@ RADIUS_OPTIONS = [1, 2, 5, 10, 20, 40, 60, 100, 250, 500]
 
 COUNTRY_CURRENCIES = {
     "United Kingdom": ("GBP", "£"),
-    "United States": ("USD", "$"),
-    "Canada": ("CAD", "$"),
-    "Australia": ("AUD", "$"),
-    "New Zealand": ("NZD", "$"),
-    "Ireland": ("EUR", "€"),
-    "Germany": ("EUR", "€"),
-    "France": ("EUR", "€"),
-    "Spain": ("EUR", "€"),
-    "Italy": ("EUR", "€"),
-    "Netherlands": ("EUR", "€"),
-    "Sweden": ("SEK", "kr"),
-    "Norway": ("NOK", "kr"),
-    "Denmark": ("DKK", "kr"),
-    "Switzerland": ("CHF", "CHF"),
-    "Poland": ("PLN", "zł"),
-    "India": ("INR", "₹"),
-    "United Arab Emirates": ("AED", "AED"),
-    "Japan": ("JPY", "¥"),
-    "Singapore": ("SGD", "$"),
 }
 
 SORT_OPTIONS = {
@@ -134,7 +115,7 @@ with st.form("deal_scanner_form"):
         placeholder="e.g. iPhone 13, MacBook Pro, PS5, Rolex, Sofa",
     )
     spec_text = st.text_area(
-        "Specs / Description Keywords (optional)",
+        "Filtering Description(optional)",
         value="",
         placeholder="e.g. 128GB unlocked excellent condition",
         height=90,
@@ -143,7 +124,12 @@ with st.form("deal_scanner_form"):
     st.subheader("Marketplace Filters")
     row1_col1, row1_col2, row1_col3 = st.columns(3)
     with row1_col1:
-        country = st.selectbox("Country", list(COUNTRY_CURRENCIES.keys()), index=0)
+        country = st.selectbox(
+            "Country",
+            list(COUNTRY_CURRENCIES.keys()),
+            index=0,
+            disabled=True,
+        )
     with row1_col2:
         location_value = st.text_input(
             "Location (City or Facebook Slug)",
