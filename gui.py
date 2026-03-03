@@ -236,7 +236,6 @@ if submitted:
     params = {
         "city": location_value.strip(),
         "query": product_query.strip(),
-        "spec": spec_text.strip(),
         "max_results": int(max_results),
         "interactive_browser": "true",
         "manual_login_timeout": 0,

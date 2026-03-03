@@ -48,7 +48,6 @@ def create_app() -> FastAPI:
         query: str,
         max_price: float = 0,
         min_price: float = 0,
-        spec: str = "",
         max_results: int = 50,
         browser_mode: str = "chrome_persistent",
         browser_profile_dir: str = "",
@@ -61,7 +60,6 @@ def create_app() -> FastAPI:
         facebook_results, _ = scrape_facebook_marketplace(
             city_slug,
             query,
-            spec,
             min_price,
             max_price,
             max_results,
@@ -106,7 +104,6 @@ def create_app() -> FastAPI:
         facebook_results, scan_meta = scrape_facebook_marketplace(
             city_slug=city_slug,
             query=query,
-            spec=spec,
             min_price=min_price,
             max_price=max_price,
             max_results=max_results,

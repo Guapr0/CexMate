@@ -256,7 +256,6 @@ def extract_listing_details(page: Any, listing_url: str, timeout_ms: int = 20000
 def scrape_facebook_marketplace(
     city_slug: str,
     query: str,
-    spec: str,
     min_price: float,
     max_price: float,
     max_results: int,
