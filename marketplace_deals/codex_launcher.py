@@ -394,12 +394,11 @@ def _run_codex_stage(
             done_signal_file.write_text("done", encoding="utf-8")
         except Exception:
             pass
-        for path in (live_log_file, done_signal_file, last_message_file):
-            try:
-                if path.exists():
-                    path.unlink()
-            except Exception:
-                pass
+        try:
+            if last_message_file.exists():
+                last_message_file.unlink()
+        except Exception:
+            pass
 
 
 def run_codex_organizer(
