@@ -324,7 +324,7 @@ if submitted:
     if files.get("raw_facebook_json_path"):
         push_update("Raw Facebook output saved.")
     if codex_meta.get("launched_cmd_window"):
-        push_update("Codex organizer cmd window launched.")
+        push_update("Codex organizer cmd window launched (it closes automatically when done).")
     if files.get("organized_facebook_json_path"):
         organized_count = codex_meta.get("organized_count")
         if isinstance(organized_count, int):

@@ -1,7 +1,8 @@
-import subprocess
 import json
 import os
 import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -9,19 +10,26 @@ from typing import Any, Dict
 PROMPT_EVERY_RUN = """From the project root, read and analyze `output/raw_facebook_list.json` carefully and accurately. Create/overwrite `output/organized_facebook_list.json` containing a JSON array with one object per listing.
 
 For each listing, output these normalized fields exactly:
-`brand`, `model`, `variant`, `color`, `storage_gb`, `ram_gb`, `dual_sim`, `battery_health_percent`, `accessories_included`, `condition`, `carrier`, `price`, `location`, `recency`, `image`, `fb_link`.
+`brand`, `model`, `variant`, `color`, `storage_gb`, `ram_gb`, `dual_sim`, `battery_health_percent`, `accessories_included`, `condition`, `carrier`, `price`, `location`, `recency`, `image`, `fb_link`, `description`.
 
 Rules:
-- If a value is missing/unclear, set it to `null` (do not omit keys).
-- Inference policy: infer only high-confidence values (e.g., brand = "Apple" if the listing clearly indicates iPhone/Apple). Do NOT guess critical specs (model/variant/storage/ram/color/carrier/battery health); keep them `null` unless explicitly stated.
+- If a value is missing or unclear, set it to `null`. Do not omit any keys.
+- Inference policy: infer only high-confidence values (for example, infer brand = "Apple" if the listing clearly indicates iPhone/Apple). Do NOT guess critical specs (model, variant, storage, ram, color, carrier, battery health). If not explicitly stated, set them to `null`.
 - `price` must be a number when possible (prefer an existing numeric value from the source if available; otherwise parse from text). If not parseable, set `null`.
 - `storage_gb` and `ram_gb` must be numbers (e.g., 128, 8) only when explicitly stated; otherwise `null`.
-- `dual_sim` must be one of: `"yes"`, `"no"`, `null` (only set yes/no if explicitly indicated).
-- `battery_health_percent` must be a number 0–100 only when explicitly stated; otherwise `null`.
-- `accessories_included` must be a boolean (`true`/`false`) only when explicitly indicated; otherwise `null`.
-- Keep `location`, `recency`, `image`, and `fb_link` aligned with the corresponding source fields for the same listing (do not fabricate).
+- `dual_sim` must be one of: `"yes"`, `"no"`, or `null`. Only set `"yes"` or `"no"` if explicitly indicated.
+- `battery_health_percent` must be a number between 0–100 only when explicitly stated; otherwise `null`.
+- `accessories_included` must be a boolean (`true`, `false`) only when explicitly indicated; otherwise `null`.
+- Keep `location`, `recency`, `image`, and `fb_link` aligned exactly with the corresponding source fields for the same listing. Do not fabricate or modify them.
 
-Write valid pretty-printed JSON. After finishing file creation, respond with exactly:
+Description field rule:
+- The `description` field must contain any relevant information mentioned in the original title or description that is NOT already captured by the structured fields above.
+- Do not duplicate information that has already been normalized into other fields.
+- Keep the text concise but complete.
+
+Write valid, properly formatted, pretty-printed JSON.
+
+After finishing file creation, respond with exactly:
 DONE"""
 
 
@@ -62,35 +70,55 @@ def _resolve_codex_executable() -> str:
     )
 
 
-def _open_status_cmd_window(root: Path, prompt_file: Path, log_file: Path) -> None:
+def _open_status_cmd_window(root: Path, live_log_file: Path, done_signal_file: Path) -> bool:
     title = "Marketplace Codex Organizer"
 
     def _ps_quote(text: str) -> str:
         return text.replace("'", "''")
 
     ps_root = _ps_quote(str(root))
-    ps_prompt = _ps_quote(str(prompt_file))
-    ps_log = _ps_quote(str(log_file))
+    ps_log = _ps_quote(str(live_log_file))
+    ps_done = _ps_quote(str(done_signal_file))
     ps_title = _ps_quote(title)
     ps_command = (
         f"$Host.UI.RawUI.WindowTitle = '{ps_title}'; "
         f"Set-Location -LiteralPath '{ps_root}'; "
         "Write-Host 'Codex organizer started.'; "
-        f"Write-Host 'Prompt: {ps_prompt}'; "
-        f"Write-Host 'Log: {ps_log}'; "
-        "Write-Host 'Streaming organizer output below (Ctrl+C stops live view).'; "
+        "Write-Host 'Streaming organizer output below (window closes automatically when done).'; "
         "Write-Host ''; "
-        f"Get-Content -LiteralPath '{ps_log}' -Wait -Tail 40"
+        f"$logPath = '{ps_log}'; "
+        f"$donePath = '{ps_done}'; "
+        "$offset = 0; "
+        "while ($true) { "
+        "  if (Test-Path -LiteralPath $logPath) { "
+        "    $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue; "
+        "    if ($null -ne $content -and $content.Length -gt $offset) { "
+        "      $chunk = $content.Substring($offset); "
+        "      Write-Host -NoNewline $chunk; "
+        "      $offset = $content.Length; "
+        "    } "
+        "  } "
+        "  if (Test-Path -LiteralPath $donePath) { break } "
+        "  Start-Sleep -Milliseconds 200; "
+        "} "
+        "if (Test-Path -LiteralPath $logPath) { "
+        "  $content = Get-Content -LiteralPath $logPath -Raw -ErrorAction SilentlyContinue; "
+        "  if ($null -ne $content -and $content.Length -gt $offset) { "
+        "    $chunk = $content.Substring($offset); "
+        "    Write-Host -NoNewline $chunk; "
+        "  } "
+        "}"
     )
     try:
         subprocess.Popen(
-            ["powershell.exe", "-NoProfile", "-NoExit", "-Command", ps_command],
+            ["powershell.exe", "-NoProfile", "-Command", ps_command],
             cwd=str(root),
             creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
         )
+        return True
     except Exception:
         # Visibility window is optional and must never break the pipeline.
-        pass
+        return False
 
 
 def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict[str, Any]:
@@ -100,8 +128,7 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
     raw_file = output_dir / "raw_facebook_list.json"
     last_message_file = output_dir / "codex_organizer_last_message.txt"
     organized_file = output_dir / "organized_facebook_list.json"
-    prompt_file = output_dir / "codex_organizer_prompt.txt"
-    log_file = output_dir / "codex_organizer_exec.log"
+    legacy_log_file = output_dir / "codex_organizer_exec.log"
     codex_executable = _resolve_codex_executable()
 
     if not raw_file.exists():
@@ -112,15 +139,34 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
             last_message_file.unlink()
         except Exception:
             pass
-    if log_file.exists():
+    if legacy_log_file.exists():
         try:
-            log_file.unlink()
+            legacy_log_file.unlink()
         except Exception:
             pass
-    prompt_file.write_text(PROMPT_EVERY_RUN, encoding="utf-8")
-    # Ensure the live viewer has a file to tail immediately.
-    log_file.write_text("", encoding="utf-8")
-    _open_status_cmd_window(root, prompt_file, log_file)
+
+    runtime_dir = Path(tempfile.gettempdir()) / "marketplace_codex_organizer"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    stale_before = time.time() - (24 * 60 * 60)
+    for stale_file in runtime_dir.glob("*"):
+        try:
+            if stale_file.is_file() and stale_file.stat().st_mtime < stale_before:
+                stale_file.unlink()
+        except Exception:
+            continue
+    run_id = f"{int(time.time() * 1000)}-{os.getpid()}"
+    live_log_file = runtime_dir / f"{run_id}.log"
+    done_signal_file = runtime_dir / f"{run_id}.done"
+
+    if done_signal_file.exists():
+        try:
+            done_signal_file.unlink()
+        except Exception:
+            pass
+
+    # Ensure the live viewer has a file to stream immediately.
+    live_log_file.write_text("", encoding="utf-8")
+    cmd_window_launched = _open_status_cmd_window(root, live_log_file, done_signal_file)
 
     command = [
         codex_executable,
@@ -149,82 +195,83 @@ def run_codex_organizer(project_root: Path, timeout_seconds: int = 3600) -> Dict
         raise RuntimeError(f"failed to start codex organizer process: {exc}") from exc
 
     output_chunks: list[str] = []
+    result_returncode: int | None = None
     try:
-        if process.stdin is not None:
-            try:
-                process.stdin.write(PROMPT_EVERY_RUN)
-            except BrokenPipeError:
-                pass
-            finally:
-                process.stdin.close()
-
-        start_time = time.monotonic()
-        if process.stdout is None:
-            raise RuntimeError("codex organizer stdout pipe unavailable")
-        with log_file.open("a", encoding="utf-8", errors="ignore") as log_handle:
-            while True:
-                if time.monotonic() - start_time > timeout_limit:
-                    process.kill()
-                    raise subprocess.TimeoutExpired(command, timeout_limit)
-
-                line = process.stdout.readline()
-                if line:
-                    output_chunks.append(line)
-                    log_handle.write(line)
-                    log_handle.flush()
-                    continue
-
-                if process.poll() is not None:
-                    break
-                time.sleep(0.05)
-
-            remainder = process.stdout.read()
-            if remainder:
-                output_chunks.append(remainder)
-                log_handle.write(remainder)
-                log_handle.flush()
-        result_returncode = process.wait()
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"codex organizer timed out after {timeout_seconds} seconds") from exc
-
-    stdout_text = "".join(output_chunks)
-    stderr_text = ""
-
-    final_message = ""
-    if last_message_file.exists():
         try:
-            final_message = last_message_file.read_text(encoding="utf-8").strip()
-        except Exception:
-            final_message = ""
+            if process.stdin is not None:
+                try:
+                    process.stdin.write(PROMPT_EVERY_RUN)
+                except BrokenPipeError:
+                    pass
+                finally:
+                    process.stdin.close()
 
-    is_valid_output, organized_count, validation_error = _validate_organized_output(organized_file)
-    if result_returncode != 0 and not is_valid_output:
-        log_tail = ""
-        if log_file.exists():
+            start_time = time.monotonic()
+            if process.stdout is None:
+                raise RuntimeError("codex organizer stdout pipe unavailable")
+            with live_log_file.open("a", encoding="utf-8", errors="ignore") as log_handle:
+                while True:
+                    if time.monotonic() - start_time > timeout_limit:
+                        process.kill()
+                        raise subprocess.TimeoutExpired(command, timeout_limit)
+
+                    line = process.stdout.readline()
+                    if line:
+                        output_chunks.append(line)
+                        log_handle.write(line)
+                        log_handle.flush()
+                        continue
+
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.05)
+
+                remainder = process.stdout.read()
+                if remainder:
+                    output_chunks.append(remainder)
+                    log_handle.write(remainder)
+                    log_handle.flush()
+            result_returncode = process.wait()
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"codex organizer timed out after {timeout_seconds} seconds") from exc
+
+        stdout_text = "".join(output_chunks)
+
+        final_message = ""
+        if last_message_file.exists():
             try:
-                log_tail = log_file.read_text(encoding="utf-8", errors="ignore").strip()[-1200:]
+                final_message = last_message_file.read_text(encoding="utf-8").strip()
             except Exception:
-                log_tail = ""
-        if not log_tail:
-            stderr_tail = (stderr_text or "").strip()[-1200:]
-            stdout_tail = (stdout_text or "").strip()[-1200:]
-            if stderr_tail:
-                log_tail = f"STDERR tail: {stderr_tail}"
-            elif stdout_tail:
-                log_tail = f"STDOUT tail: {stdout_tail}"
-        raise RuntimeError(
-            "codex exec failed with exit code "
-            f"{result_returncode}. {validation_error or 'organized output missing.'}"
-            + (f" Log tail: {log_tail}" if log_tail else "")
-        )
-    if not is_valid_output:
-        raise RuntimeError(f"codex organizer output invalid: {validation_error}")
+                final_message = ""
 
-    return {
-        "launched_cmd_window": True,
-        "return_code": int(result_returncode),
-        "final_message": final_message,
-        "strict_done_met": final_message == "DONE",
-        "organized_count": organized_count,
-        "organized_path": str(organized_file.resolve()),
-    }
+        is_valid_output, organized_count, validation_error = _validate_organized_output(organized_file)
+        if result_returncode is None:
+            raise RuntimeError("codex organizer process did not return an exit code")
+        if result_returncode != 0 and not is_valid_output:
+            stdout_tail = (stdout_text or "").strip()[-1200:]
+            raise RuntimeError(
+                "codex exec failed with exit code "
+                f"{result_returncode}. {validation_error or 'organized output missing.'}"
+                + (f" Log tail: STDOUT tail: {stdout_tail}" if stdout_tail else "")
+            )
+        if not is_valid_output:
+            raise RuntimeError(f"codex organizer output invalid: {validation_error}")
+
+        return {
+            "launched_cmd_window": cmd_window_launched,
+            "return_code": int(result_returncode),
+            "final_message": final_message,
+            "strict_done_met": final_message == "DONE",
+            "organized_count": organized_count,
+            "organized_path": str(organized_file.resolve()),
+        }
+    finally:
+        try:
+            done_signal_file.write_text("done", encoding="utf-8")
+        except Exception:
+            pass
+        try:
+            if last_message_file.exists():
+                last_message_file.unlink()
+        except Exception:
+            pass

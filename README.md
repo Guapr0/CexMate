@@ -8,12 +8,12 @@ This app scans Facebook Marketplace listings for a product query, saves raw resu
 - Saves raw listings to `output/raw_facebook_list.json`.
 - Runs Codex organizer to create `output/organized_facebook_list.json`.
 - Shows progress updates in the Streamlit UI.
-- Opens a separate live log window for organizer progress.
+- Opens a separate live organizer window for progress and closes it automatically when finished.
 
 ## Important Runtime Behavior
 
 - On every `/find_phone_deals` run, the app clears everything inside `output/` first.
-- This ensures each run starts clean and you only keep the latest run outputs/logs.
+- This ensures each run starts clean and you only keep the latest run outputs.
 
 ## Requirements
 
@@ -63,9 +63,6 @@ Open the Streamlit URL shown in terminal 2 (usually `http://localhost:8501`).
 
 - `output/raw_facebook_list.json`
 - `output/organized_facebook_list.json`
-- `output/codex_organizer_exec.log`
-- `output/codex_organizer_prompt.txt`
-- `output/codex_organizer_last_message.txt` (when available)
 
 ## Troubleshooting
 
@@ -75,7 +72,7 @@ Open the Streamlit URL shown in terminal 2 (usually `http://localhost:8501`).
 - `codex executable not found`:
   - Install Codex CLI and ensure `codex` is on `PATH`.
 - No organizer output:
-  - Check `output/codex_organizer_exec.log` for errors.
+  - Check the API error message; organizer stdout tail is included on failures.
 
 ## Can I Minimize Chrome/CMD While It Runs?
 
@@ -83,4 +80,4 @@ Yes. Minimizing windows does not stop the process.
 
 - Keep the API terminal and Streamlit terminal running.
 - Do not close Chrome if the scraper still needs it.
-- Do not close the organizer log window if you still want live progress visibility.
+- The organizer status window will close itself automatically when the run is complete.
