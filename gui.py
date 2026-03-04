@@ -334,16 +334,8 @@ if submitted:
         push_update("CeX group results output saved.")
     push_update("Scan finished.")
 
-    st.subheader("Scan Summary")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Facebook Matches", counts.get("facebook_matches", 0))
-    c2.metric("CeX Candidates", counts.get("cex_candidates", 0))
-    c3.metric("CeX Groups Matched", counts.get("cex_groups_matched", 0))
-
     if not results:
         st.info("No Facebook listings matched your filters. Try adjusting query, location, or price range.")
-    else:
-        st.info(f"{len(results)} Facebook listings matched. Raw results are available as JSON below.")
 
     st.subheader("Output Files")
     raw_json_path = files.get("raw_facebook_json_path")
