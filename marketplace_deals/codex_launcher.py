@@ -15,17 +15,21 @@ For each listing, output these normalized fields exactly:
 
 Rules:
 - If a value is missing or unclear, set it to `null`. Do not omit any keys.
-- Inference policy: infer only high-confidence values (for example, infer brand = "Apple" if the listing clearly indicates iPhone/Apple). Do NOT guess critical specs (model, variant, storage, ram, color,
-carrier, battery health). If not explicitly stated, set them to `null`.
+- Inference policy: infer only high-confidence values (for example, infer brand = "Apple" if the listing clearly indicates iPhone/Apple). Do NOT guess critical specs (model, variant, storage, ram, color, carrier, battery health). If not explicitly stated, set them to `null`, except for the special storage rule below.
 - `price` must be a number when possible (prefer an existing numeric value from the source if available; otherwise parse from text). If not parseable, set `null`.
-- `storage_gb` and `ram_gb` must be numbers (e.g., 128, 8) only when explicitly stated; otherwise `null`.
+- `storage_gb` and `ram_gb` must be numbers (e.g., 128, 8) only when explicitly stated, except for the special storage rule below.
 - `dual_sim` must be one of: `"yes"`, `"no"`, or `null`. Only set `"yes"` or `"no"` if explicitly indicated.
 - `battery_health_percent` must be a number between 0–100 only when explicitly stated; otherwise `null`.
 - `accessories_included` must be a boolean (`true`, `false`) only when explicitly indicated; otherwise `null`.
 - Keep `location`, `recency`, `image`, and `fb_link` aligned exactly with the corresponding source fields for the same listing. Do not fabricate or modify them.
 
+Storage field rule (`storage_gb`):
+- If storage information is explicitly provided, parse and store the numeric value.
+- If storage information is not available or cannot be determined, set `storage_gb` to `256`.
+- When this default is applied, add a short note to the `description` stating that storage was not available in the listing and the default value 256GB was assigned.
+
 Grade field rule (`grade`):
-- Allowed values are only: `"A"`, `"B"`, `"C"`, or `null`.
+- Allowed values are only: `"A"`, `"B"`, or `"C"`.
 - First priority: if title/description explicitly states grade wording, map using:
   - Grade A aliases: `A`, `A+`, `Mint`, `Pristine`, `Excellent`, `Like New`.
   - Grade B aliases: `B`, `B+`, `Very Good`, `Good Condition`.
@@ -34,11 +38,13 @@ Grade field rule (`grade`):
   - Grade A: almost no visible marks, no screen scratches, only very light micro marks, fully functional.
   - Grade B: light (not deep) screen scratches, small scuffs/marks on body, no cracks, fully functional.
   - Grade C: visible scratches (possibly fingernail-feel), dents/heavier scuffing, small paint chips, fully working.
-- If conflicting signals exist, choose the lower (worse) grade.
+- If conflicting signals exist or there is not enough information to determine the grade, set `grade` to `"B"`.
+- When this default grade is applied, add a short note in the `description` stating that no grade information was available and the default grade B was assigned to the Facebook listing.
 
 Description field rule:
 - The `description` field must contain any relevant information mentioned in the original title or description that is NOT already captured by the structured fields above.
 - Do not duplicate information that has already been normalized into other fields.
+- If any default rule is applied (grade or storage), include a short note describing the default assignment.
 - Keep the text concise but complete.
 
 Write valid, properly formatted, pretty-printed JSON.
