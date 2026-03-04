@@ -3,6 +3,7 @@ import os
 import random
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Deque, Dict, List, Set, Tuple
 
 from fastapi import HTTPException
@@ -302,7 +303,7 @@ def extract_listing_details(page: Any, listing_url: str, timeout_ms: int = 20000
             pass
 
 
-def scrape_facebook_marketplace(
+def _scrape_facebook_marketplace_impl(
     city_slug: str,
     query: str,
     min_price: float,
@@ -653,3 +654,62 @@ def scrape_facebook_marketplace(
             pass
         except Exception:
             pass
+
+
+def scrape_facebook_marketplace(
+    city_slug: str,
+    query: str,
+    min_price: float,
+    max_price: float,
+    max_results: int,
+    interactive_browser: bool = True,
+    manual_login_timeout: int = 0,
+    browser_mode: str = "chrome_persistent",
+    browser_profile_dir: str = "",
+    radius_km: int = 0,
+    sort_by: str = "suggested",
+    condition_filters: List[str] | None = None,
+    date_listed: str = "all",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    try:
+        asyncio.get_running_loop()
+        has_running_loop = True
+    except RuntimeError:
+        has_running_loop = False
+
+    if has_running_loop:
+        # Playwright sync API cannot be started inside an active asyncio loop.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _scrape_facebook_marketplace_impl,
+                city_slug,
+                query,
+                min_price,
+                max_price,
+                max_results,
+                interactive_browser,
+                manual_login_timeout,
+                browser_mode,
+                browser_profile_dir,
+                radius_km,
+                sort_by,
+                condition_filters,
+                date_listed,
+            )
+            return future.result()
+
+    return _scrape_facebook_marketplace_impl(
+        city_slug=city_slug,
+        query=query,
+        min_price=min_price,
+        max_price=max_price,
+        max_results=max_results,
+        interactive_browser=interactive_browser,
+        manual_login_timeout=manual_login_timeout,
+        browser_mode=browser_mode,
+        browser_profile_dir=browser_profile_dir,
+        radius_km=radius_km,
+        sort_by=sort_by,
+        condition_filters=condition_filters,
+        date_listed=date_listed,
+    )
