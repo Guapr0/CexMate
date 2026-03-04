@@ -1,3 +1,4 @@
+import asyncio
 import os
 import random
 import time
@@ -358,9 +359,12 @@ def scrape_facebook_marketplace(
         "fetch_listing_details": fetch_listing_details,
     }
 
-    with sync_playwright() as p:
-        browser = None
-        context = None
+    playwright_mgr = sync_playwright()
+    p = playwright_mgr.start()
+    browser = None
+    context = None
+    page = None
+    try:
         try:
             if mode == "chrome_persistent":
                 try:
@@ -376,7 +380,7 @@ def scrape_facebook_marketplace(
                         "Could not open Chrome persistent profile. Close other Chrome windows using this profile, "
                         "or choose a different profile directory.",
                     ) from exc
-                page = context.pages[0] if context.pages else context.new_page()
+                page = context.new_page()
             else:
                 launch_kwargs: Dict[str, Any] = {"headless": headless}
                 if mode == "chrome":
@@ -627,6 +631,11 @@ def scrape_facebook_marketplace(
             raise HTTPException(502, f"Facebook scrape failed: {exc}")
         finally:
             try:
+                if page:
+                    page.close()
+            except Exception:
+                pass
+            try:
                 if context:
                     context.close()
             except Exception:
@@ -636,3 +645,11 @@ def scrape_facebook_marketplace(
                     browser.close()
             except Exception:
                 pass
+    finally:
+        try:
+            playwright_mgr.stop()
+        except asyncio.InvalidStateError:
+            # Rare Playwright shutdown race on Windows worker threads.
+            pass
+        except Exception:
+            pass

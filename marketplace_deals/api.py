@@ -1,5 +1,4 @@
 from datetime import datetime
-import os
 from typing import Any, Dict, List
 
 from fastapi import FastAPI, HTTPException, Query
@@ -7,11 +6,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from marketplace_deals.codex_launcher import run_codex_organizer
 from marketplace_deals.config import PROJECT_ROOT
-from marketplace_deals.cex import scrape_cex_prices
+from marketplace_deals.cex import scan_cex_by_group_titles
 from marketplace_deals.facebook import scrape_facebook_marketplace
 from marketplace_deals.ip_info import return_ip_information as get_ip_information
-from marketplace_deals.matching import compare_marketplace_vs_cex
-from marketplace_deals.storage import clear_output_directory, save_deals, save_raw_facebook_results
+from marketplace_deals.storage import clear_output_directory, save_cex_results_json, save_raw_facebook_results
 from marketplace_deals.text_utils import resolve_marketplace_slug
 
 DATE_LISTED_LABELS = {
@@ -20,11 +18,6 @@ DATE_LISTED_LABELS = {
     "7": "Last 7 days",
     "30": "Last 30 days",
 }
-
-
-def cex_pipeline_enabled() -> bool:
-    value = os.getenv("ENABLE_CEX_PIPELINE", "false").strip().lower()
-    return value in {"1", "true", "yes", "on"}
 
 
 def create_app() -> FastAPI:
@@ -143,26 +136,24 @@ def create_app() -> FastAPI:
         if filtered_path:
             saved_files["filtered_facebook_json_path"] = filtered_path
 
-        is_cex_enabled = cex_pipeline_enabled()
-        cex_results: List[Dict[str, Any]] = []
-        opportunities: List[Dict[str, Any]] = []
+        cex_meta: Dict[str, Any] = {}
 
-        if is_cex_enabled:
-            cex_results = scrape_cex_prices(
-                search_text=f"{query} {spec}".strip(),
-                browser_mode=browser_mode,
-                browser_profile_dir=browser_profile_dir,
-                interactive_browser=interactive_browser,
-                challenge_timeout=manual_login_timeout,
-            )
-            opportunities = compare_marketplace_vs_cex(facebook_results, cex_results)
-            deal_files = save_deals(query, city_slug, opportunities)
-            saved_files.update(
-                {
-                    "deals_json_path": deal_files.get("json_path", ""),
-                    "deals_csv_path": deal_files.get("csv_path", ""),
-                }
-            )
+        if not filtered_path:
+            raise HTTPException(502, "Filtered Facebook output missing; cannot run CeX group scan.")
+        cex_meta = scan_cex_by_group_titles(
+            filtered_json_path=filtered_path,
+            browser_mode=browser_mode,
+            browser_profile_dir=browser_profile_dir,
+            interactive_browser=interactive_browser,
+            challenge_timeout=manual_login_timeout,
+        )
+        cex_results: List[Dict[str, Any]] = cex_meta.get("results", [])
+        deal_files = save_cex_results_json(query, city_slug, cex_results)
+        saved_files.update(
+            {
+                "deals_json_path": deal_files.get("json_path", ""),
+            }
+        )
 
         return {
             "search": {
@@ -179,19 +170,16 @@ def create_app() -> FastAPI:
                 "date_listed": date_listed,
                 "searched_at_utc": datetime.utcnow().isoformat() + "Z",
             },
-            "pipeline": {
-                "cex_enabled": is_cex_enabled,
-            },
             "counts": {
                 "facebook_matches": len(facebook_results),
-                "cex_candidates": len(cex_results),
-                "profitable_deals": len(opportunities),
+                "cex_candidates": int(cex_meta.get("items_checked", len(cex_results))),
+                "cex_groups_matched": int(cex_meta.get("groups_matched", 0)),
             },
             "scan_meta": scan_meta,
             "codex": codex_meta,
+            "cex": cex_meta,
             "files": saved_files,
             "results": facebook_results,
-            "opportunities": opportunities,
         }
 
     @app.get("/return_ip_information")

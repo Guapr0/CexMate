@@ -1,145 +1,363 @@
+import asyncio
 import json
+import random
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import quote_plus
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qs, quote_plus, urlencode, urljoin, urlparse, urlunparse
 
-import requests
-from bs4 import BeautifulSoup
 from fastapi import HTTPException
 from playwright.sync_api import sync_playwright
 
 from marketplace_deals.browser_ui import cex_page_needs_challenge, show_browser_banner
 from marketplace_deals.config import normalize_browser_mode, resolve_profile_dir
-from marketplace_deals.text_utils import dedupe_items_by_name_price, normalize_text, parse_price
+from marketplace_deals.text_utils import normalize_text
+
+CURRENCY_PATTERN = re.compile(r"[£$€]\s?\d[\d,]*(?:\.\d{1,2})?")
+GB_PATTERN = re.compile(r"(\d+)\s*gb", re.IGNORECASE)
+RAM_PATTERN = re.compile(r"(\d+)\s*gb\s*ram", re.IGNORECASE)
+GRADE_PATTERN = re.compile(r",\s*([ABC])\s*$", re.IGNORECASE)
 
 
-def extract_cex_records_from_next_data(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    records: List[Dict[str, Any]] = []
-    script = soup.find("script", id="__NEXT_DATA__")
-    if not script or not script.string:
-        return records
-
+def _safe_float_from_currency(raw_value: str) -> Optional[float]:
+    match = CURRENCY_PATTERN.search(raw_value or "")
+    if not match:
+        return None
+    text = match.group(0)
+    cleaned = text.replace("£", "").replace("$", "").replace("€", "").replace(",", "").strip()
     try:
-        payload = json.loads(script.string)
-    except json.JSONDecodeError:
-        return records
-
-    price_keys = ["price", "sellPrice", "boxedPrice", "unboxedPrice", "discountedPrice"]
-    name_keys = ["name", "title", "displayName"]
-    url_keys = ["url", "link", "productUrl", "slug"]
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            possible_name = next((str(node[k]) for k in name_keys if k in node and node[k]), "")
-
-            possible_price = None
-            for key in price_keys:
-                if key in node:
-                    parsed = parse_price(node.get(key))
-                    if parsed is not None:
-                        possible_price = parsed
-                        break
-
-            possible_url = next((str(node[k]) for k in url_keys if k in node and node[k]), "")
-            if possible_name and possible_price is not None:
-                if possible_url and possible_url.startswith("/"):
-                    possible_url = f"https://uk.webuy.com{possible_url}"
-                records.append(
-                    {
-                        "name": possible_name.strip(),
-                        "price": round(possible_price, 2),
-                        "url": possible_url,
-                        "source": "next_data",
-                    }
-                )
-
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(payload)
-    return records
+        return float(cleaned)
+    except ValueError:
+        return None
 
 
-def extract_cex_records_from_html_cards(soup: BeautifulSoup, max_results: int = 100) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    seen: Set[Tuple[str, float]] = set()
+def _extract_trade_in_cash_price(trade_block_text: str) -> Optional[float]:
+    text = " ".join(str(trade_block_text or "").split())
+    if not text:
+        return None
 
-    for anchor in soup.select('a[href*="/product-detail"]'):
-        href = (anchor.get("href") or "").strip()
+    # Prefer price adjacent to "Trade in for Cash" specifically.
+    cash_price_before_label = re.search(
+        r"([£$€]\s?\d[\d,]*(?:\.\d{1,2})?)\s*trade\s*in\s*for\s*cash",
+        text,
+        re.IGNORECASE,
+    )
+    if cash_price_before_label:
+        return _safe_float_from_currency(cash_price_before_label.group(1))
+
+    cash_price_after_label = re.search(
+        r"trade\s*in\s*for\s*cash[^£$€]*([£$€]\s?\d[\d,]*(?:\.\d{1,2})?)",
+        text,
+        re.IGNORECASE,
+    )
+    if cash_price_after_label:
+        return _safe_float_from_currency(cash_price_after_label.group(1))
+
+    # Fallback: when both voucher+cash prices exist, cash is usually the last currency value.
+    if re.search(r"trade\s*in\s*for\s*cash", text, re.IGNORECASE):
+        prices = re.findall(r"[£$€]\s?\d[\d,]*(?:\.\d{1,2})?", text)
+        if prices:
+            return _safe_float_from_currency(prices[-1])
+
+    return _safe_float_from_currency(text)
+
+
+def _human_pause(min_seconds: float, max_seconds: float) -> None:
+    low = max(0.0, float(min_seconds))
+    high = max(low, float(max_seconds))
+    time.sleep(random.uniform(low, high))
+
+
+def _load_group_titles(filtered_json_path: str) -> List[str]:
+    path = Path(filtered_json_path).resolve()
+    if not path.exists():
+        raise HTTPException(502, f"Filtered file not found: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(502, f"Invalid filtered JSON: {exc}") from exc
+
+    if not isinstance(payload, list):
+        raise HTTPException(502, "Filtered JSON root must be an array.")
+
+    group_titles: List[str] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        group_title = str(row.get("group_title", "")).strip()
+        if group_title:
+            group_titles.append(group_title)
+    return group_titles
+
+
+def _parse_group_title_constraints(group_title: str) -> Dict[str, Any]:
+    ram_gb: Optional[int] = None
+    ram_match = RAM_PATTERN.search(group_title)
+    if ram_match:
+        ram_gb = int(ram_match.group(1))
+
+    gb_values = [int(match.group(1)) for match in GB_PATTERN.finditer(group_title)]
+    storage_gb: Optional[int] = None
+    if gb_values:
+        if ram_gb is None:
+            storage_gb = gb_values[0]
+        else:
+            for value in gb_values:
+                if value != ram_gb:
+                    storage_gb = value
+                    break
+            if storage_gb is None and gb_values:
+                storage_gb = gb_values[0]
+
+    grade = ""
+    grade_match = GRADE_PATTERN.search(group_title)
+    if grade_match:
+        grade = grade_match.group(1).upper()
+
+    cleaned_title = group_title
+    cleaned_title = re.sub(r",\s*[ABC]\s*$", " ", cleaned_title, flags=re.IGNORECASE)
+    cleaned_title = re.sub(r"\b\d+\s*gb\s*ram\b", " ", cleaned_title, flags=re.IGNORECASE)
+    cleaned_title = re.sub(r"\b\d+\s*gb\b", " ", cleaned_title, flags=re.IGNORECASE)
+
+    normalized = normalize_text(cleaned_title)
+    tokens = [token for token in normalized.split() if token]
+    filtered_tokens: List[str] = []
+    for token in tokens:
+        if token in {"gb", "ram", "grade", "cash", "trade", "in", "for"}:
+            continue
+        if token in {"a", "b", "c"}:
+            continue
+        if token.isdigit():
+            continue
+        if len(token) <= 1:
+            continue
+        filtered_tokens.append(token)
+
+    return {
+        "required_tokens": sorted(set(filtered_tokens)),
+        "storage_gb": storage_gb,
+        "ram_gb": ram_gb,
+        "grade": grade,
+    }
+
+
+def _normalize_cex_link(raw_href: str) -> str:
+    href = str(raw_href or "").strip()
+    if not href:
+        return ""
+
+    absolute = href if href.startswith("http") else urljoin("https://uk.webuy.com", href)
+    parsed = urlparse(absolute)
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+
+    path = parsed.path or "/"
+    path_no_trailing = path.rstrip("/") or "/"
+    query = parsed.query or ""
+
+    # Canonicalize product-detail links to the stable id-based URL.
+    if path_no_trailing == "/product-detail":
+        product_id = parse_qs(query).get("id", [None])[0]
+        if product_id:
+            canonical_query = urlencode({"id": product_id})
+            return urlunparse(("https", "uk.webuy.com", "/product-detail", "", canonical_query, ""))
+
+    return urlunparse(("https", parsed.netloc, path, "", query, ""))
+
+
+def _collect_cex_cards(page: Any, limit: int) -> List[Dict[str, Any]]:
+    payload = page.evaluate(
+        """
+        (limit) => {
+          const cards = Array.from(document.querySelectorAll('.search-product-card'));
+          const out = [];
+          for (const card of cards) {
+            const titleAnchor = card.querySelector('.card-title a[title], .card-title a[href]');
+            const anchor = titleAnchor || card.querySelector('a[href*="/product-detail"], a[href]');
+            if (!anchor) continue;
+            const hrefRaw = anchor.getAttribute('href') || '';
+            const href = hrefRaw.trim();
+            if (!href) continue;
+
+            const cardTitleNode = card.querySelector('.card-title');
+            const title = (
+              (titleAnchor && (titleAnchor.getAttribute('title') || titleAnchor.textContent)) ||
+              (cardTitleNode && cardTitleNode.textContent) ||
+              anchor.getAttribute('title') ||
+              anchor.textContent ||
+              ''
+            ).trim();
+
+            const tradeNode = card.querySelector('.tradeInPrices');
+            const tradeText = ((tradeNode && (tradeNode.innerText || tradeNode.textContent)) || '').trim();
+
+            out.push({ href, title, tradeText });
+            if (out.length >= limit) break;
+          }
+          return out;
+        }
+        """,
+        max(10, limit),
+    )
+
+    cards: List[Dict[str, Any]] = []
+    for row in payload or []:
+        href = str(row.get("href") or "").strip()
         if not href:
             continue
-
-        full_url = href if href.startswith("http") else f"https://uk.webuy.com{href}"
-        name = " ".join(anchor.get_text(" ", strip=True).split())
-
-        container = anchor
-        card_text = name
-        for _ in range(4):
-            parent = container.parent
-            if not parent:
-                break
-            container = parent
-            parent_text = " ".join(container.get_text(" ", strip=True).split())
-            if parent_text:
-                card_text = parent_text
-            if "£" in parent_text or "�" in parent_text:
-                break
-
-        price_match = re.search(r"[£�]\s?\d[\d,]*(?:\.\d{1,2})?", card_text)
-        if not price_match:
+        cex_link = _normalize_cex_link(href)
+        if not cex_link:
             continue
-
-        price_raw = price_match.group(0).replace("�", "£")
-        price_value = parse_price(price_raw)
-        if price_value is None:
-            continue
-
-        if not name:
-            name_without_price = re.sub(r"[£�]\s?\d[\d,]*(?:\.\d{1,2})?", "", card_text).strip()
-            name = name_without_price if name_without_price else "CeX item"
-
-        key = (normalize_text(name), float(price_value))
-        if key in seen:
-            continue
-        seen.add(key)
-
-        items.append(
+        title = " ".join(str(row.get("title") or "").split())
+        trade_text = " ".join(str(row.get("tradeText") or "").split())
+        market_price = _extract_trade_in_cash_price(trade_text)
+        cards.append(
             {
-                "name": name.strip(),
-                "price": round(price_value, 2),
-                "url": full_url,
-                "source": "playwright_html",
+                "title": title,
+                "cex_link": cex_link,
+                "market_price": market_price,
             }
         )
-        if len(items) >= max_results:
-            break
-
-    return items
+    return cards
 
 
-def scrape_cex_prices_with_browser(
-    search_text: str,
-    max_results: int = 100,
+def _wait_for_cex_results_render(
+    page: Any,
+    timeout_seconds: float = 30.0,
+    poll_ms: int = 450,
+) -> bool:
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        try:
+            card_count = int(page.locator(".search-product-card").count())
+        except Exception:
+            card_count = 0
+        if card_count > 0:
+            return True
+
+        try:
+            # Early exit when explicit empty-state text is already rendered.
+            empty_count = int(page.locator("text=/no results|0 results|no products/i").count())
+        except Exception:
+            empty_count = 0
+        if empty_count > 0:
+            return False
+
+        page.wait_for_timeout(max(120, int(poll_ms)))
+    return False
+
+
+def _highlight_cex_card(page: Any, cex_link: str, accepted: bool) -> None:
+    if not cex_link:
+        return
+    color = "#22c55e" if accepted else "#38bdf8"
+    background = "rgba(34, 197, 94, .18)" if accepted else "rgba(56, 189, 248, .18)"
+    try:
+        page.evaluate(
+            """
+            ({ cexLink, color, background }) => {
+              const previous = document.querySelector('[data-codex-cex-active="1"]');
+              if (previous) {
+                previous.style.outline = '';
+                previous.style.background = '';
+                previous.removeAttribute('data-codex-cex-active');
+              }
+
+              const cards = Array.from(document.querySelectorAll('.search-product-card'));
+              const target = cards.find((card) => {
+                const anchor = card.querySelector('.card-title a[href], a[href*="/product-detail"], a[href]');
+                if (!anchor) return false;
+                const hrefRaw = anchor.getAttribute('href') || '';
+                if (!hrefRaw) return false;
+                let abs = '';
+                try {
+                  const url = new URL(hrefRaw, 'https://uk.webuy.com');
+                  const productId = url.searchParams.get('id');
+                  if (productId) {
+                    abs = `https://uk.webuy.com/product-detail?id=${encodeURIComponent(productId)}`;
+                  } else {
+                    abs = `${url.origin}${url.pathname}${url.search}`;
+                  }
+                } catch (e) {
+                  return false;
+                }
+                return abs === cexLink;
+              });
+              if (!target) return;
+
+              target.setAttribute('data-codex-cex-active', '1');
+              target.style.transition = 'all .2s ease';
+              target.style.outline = `3px solid ${color}`;
+              target.style.background = background;
+            }
+            """,
+            {"cexLink": cex_link, "color": color, "background": background},
+        )
+    except Exception:
+        pass
+
+
+def _passes_filters(candidate_title: str, constraints: Dict[str, Any]) -> Tuple[bool, float]:
+    title = str(candidate_title or "")
+    title_lower = title.lower()
+    title_norm = normalize_text(title)
+    title_tokens = set(title_norm.split()) if title_norm else set()
+
+    required_tokens: List[str] = constraints.get("required_tokens", [])
+    token_ratio = 1.0
+    if required_tokens:
+        hits = sum(1 for token in required_tokens if token in title_tokens)
+        token_ratio = hits / len(required_tokens)
+        if token_ratio < 0.4:
+            return False, round(token_ratio, 3)
+
+    storage_gb = constraints.get("storage_gb")
+    if storage_gb is not None and re.search(rf"\b{int(storage_gb)}\s*gb\b", title_lower) is None:
+        return False, round(token_ratio, 3)
+
+    ram_gb = constraints.get("ram_gb")
+    if ram_gb is not None and re.search(rf"\b{int(ram_gb)}\s*gb\b", title_lower) is None:
+        return False, round(token_ratio, 3)
+
+    return True, round(token_ratio, 3)
+
+
+def _scan_cex_by_group_titles_impl(
+    filtered_json_path: str,
     browser_mode: str = "chrome_persistent",
     browser_profile_dir: str = "",
     interactive_browser: bool = False,
     challenge_timeout: int = 0,
-) -> List[Dict[str, Any]]:
+    max_scroll_rounds: int = 12,
+) -> Dict[str, Any]:
+    group_titles = _load_group_titles(filtered_json_path)
+    if not group_titles:
+        return {
+            "results": [],
+            "group_summaries": [],
+            "groups_scanned": 0,
+            "groups_matched": 0,
+            "items_checked": 0,
+        }
+
     mode = normalize_browser_mode(browser_mode)
     if mode == "chromium":
-        # Chromium is often blocked by Cloudflare on CeX.
         mode = "chrome"
-
-    search_url = f"https://uk.webuy.com/search/?stext={quote_plus(search_text)}"
     profile_path = resolve_profile_dir(browser_profile_dir) if mode == "chrome_persistent" else None
 
-    with sync_playwright() as p:
-        context = None
-        browser = None
+    results: List[Dict[str, Any]] = []
+    group_summaries: List[Dict[str, Any]] = []
+    groups_matched = 0
+    items_checked = 0
+
+    playwright_mgr = sync_playwright()
+    p = playwright_mgr.start()
+    context = None
+    browser = None
+    page = None
+    try:
         try:
             if mode == "chrome_persistent":
                 try:
@@ -155,7 +373,7 @@ def scrape_cex_prices_with_browser(
                         "Could not open Chrome persistent profile for CeX. Close conflicting Chrome windows "
                         "or choose a different profile directory.",
                     ) from exc
-                page = context.pages[0] if context.pages else context.new_page()
+                page = context.new_page()
             else:
                 launch_kwargs: Dict[str, Any] = {"headless": not interactive_browser}
                 if mode == "chrome":
@@ -163,43 +381,146 @@ def scrape_cex_prices_with_browser(
                 browser = p.chromium.launch(**launch_kwargs)
                 page = browser.new_page()
 
-            page.goto(search_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
+            for index, group_title in enumerate(group_titles, start=1):
+                if index > 1:
+                    _human_pause(1.0, 2.0)
+                constraints = _parse_group_title_constraints(group_title)
+                search_url = f"https://uk.webuy.com/search?stext={quote_plus(group_title)}"
+                page.goto(search_url, wait_until="domcontentloaded")
+                page.wait_for_timeout(random.randint(1000, 1800))
 
-            if cex_page_needs_challenge(page):
-                if not interactive_browser:
-                    raise HTTPException(
-                        502,
-                        "CeX blocked automated access (Cloudflare challenge). "
-                        "Re-run with browser_mode=chrome_persistent and interactive_browser=true.",
-                    )
-
-                show_browser_banner(
-                    page,
-                    "Please complete the CeX security check in this browser. Matching will continue automatically.",
-                    "warn",
-                )
-                has_deadline = challenge_timeout is not None and challenge_timeout > 0
-                deadline = time.time() + challenge_timeout if has_deadline else None
-                while True:
-                    if has_deadline and deadline is not None and time.time() >= deadline:
-                        break
-                    if not cex_page_needs_challenge(page):
-                        break
-                    page.wait_for_timeout(1500)
                 if cex_page_needs_challenge(page):
-                    raise HTTPException(
-                        408,
-                        "Timed out waiting for CeX security check. Please complete challenge and retry.",
+                    if not interactive_browser:
+                        raise HTTPException(
+                            502,
+                            "CeX blocked automated access (Cloudflare challenge). "
+                            "Re-run with browser_mode=chrome_persistent and interactive_browser=true.",
+                        )
+                    show_browser_banner(
+                        page,
+                        "Please complete the CeX security check in this browser. Scanning will continue automatically.",
+                        "warn",
                     )
+                    has_deadline = challenge_timeout is not None and challenge_timeout > 0
+                    deadline = time.time() + challenge_timeout if has_deadline else None
+                    while True:
+                        if has_deadline and deadline is not None and time.time() >= deadline:
+                            break
+                        if not cex_page_needs_challenge(page):
+                            break
+                        page.wait_for_timeout(1500)
+                    if cex_page_needs_challenge(page):
+                        raise HTTPException(
+                            408,
+                            "Timed out waiting for CeX security check. Please complete challenge and retry.",
+                        )
+                    # Challenge solved; wait for results to hydrate.
+                    _wait_for_cex_results_render(page, timeout_seconds=35.0, poll_ms=500)
+                else:
+                    _wait_for_cex_results_render(page, timeout_seconds=35.0, poll_ms=500)
 
-            page.keyboard.press("End")
-            page.wait_for_timeout(1200)
+                if interactive_browser:
+                    show_browser_banner(page, f"Scanning CeX group {index}/{len(group_titles)}", "info")
 
-            soup = BeautifulSoup(page.content(), "html.parser")
-            items = extract_cex_records_from_html_cards(soup, max_results=max_results)
-            return items
+                seen_links: set[str] = set()
+                matched_row: Optional[Dict[str, Any]] = None
+                checked_for_group = 0
+                idle_scroll_rounds = 0
+
+                try:
+                    page.evaluate("() => window.scrollTo({ top: 0, behavior: 'instant' })")
+                except Exception:
+                    pass
+                page.wait_for_timeout(random.randint(250, 520))
+
+                max_idle_scroll_rounds = max(1, int(max_scroll_rounds))
+                # Process products in-order for this group until a passing match is found.
+                # Only then move to the next group title.
+                while idle_scroll_rounds < max_idle_scroll_rounds and matched_row is None:
+                    cards = _collect_cex_cards(page, 120)
+                    pending_cards = []
+                    for card in cards:
+                        cex_link = str(card.get("cex_link", "")).strip()
+                        if not cex_link or cex_link in seen_links:
+                            continue
+                        pending_cards.append(card)
+
+                    if not pending_cards:
+                        idle_scroll_rounds += 1
+                        try:
+                            page.mouse.wheel(0, random.randint(750, 1200))
+                        except Exception:
+                            try:
+                                page.keyboard.press("PageDown")
+                            except Exception:
+                                pass
+                        page.wait_for_timeout(random.randint(900, 1700))
+                        continue
+
+                    idle_scroll_rounds = 0
+                    for card in pending_cards:
+                        cex_link = str(card.get("cex_link", "")).strip()
+                        title = str(card.get("title", "")).strip()
+                        seen_links.add(cex_link)
+
+                        checked_for_group += 1
+                        items_checked += 1
+
+                        passed, _ = _passes_filters(title, constraints)
+                        _highlight_cex_card(page, cex_link, accepted=passed)
+
+                        if passed:
+                            matched_row = {
+                                "Group Title": group_title,
+                                "market_price": card.get("market_price"),
+                                "cex_link": cex_link,
+                            }
+                            break
+
+                        _human_pause(0.22, 0.55)
+
+                    if matched_row is None:
+                        # Give CeX list renderer time to append additional cards before next poll.
+                        page.wait_for_timeout(random.randint(420, 900))
+
+                if matched_row is None:
+                    matched_row = {
+                        "Group Title": group_title,
+                        "market_price": None,
+                        "cex_link": "NOT_FOUND",
+                    }
+                    found = False
+                else:
+                    found = True
+                    groups_matched += 1
+
+                results.append(matched_row)
+                group_summaries.append(
+                    {
+                        "group_title": group_title,
+                        "checked_items": checked_for_group,
+                        "found": found,
+                        "search_url": search_url,
+                    }
+                )
+
+            if interactive_browser:
+                show_browser_banner(page, "CeX group scanning complete.", "ok")
+                page.wait_for_timeout(1000)
+
+            return {
+                "results": results,
+                "group_summaries": group_summaries,
+                "groups_scanned": len(group_titles),
+                "groups_matched": groups_matched,
+                "items_checked": items_checked,
+            }
         finally:
+            try:
+                if page:
+                    page.close()
+            except Exception:
+                pass
             try:
                 if context:
                     context.close()
@@ -210,72 +531,49 @@ def scrape_cex_prices_with_browser(
                     browser.close()
             except Exception:
                 pass
+    finally:
+        try:
+            playwright_mgr.stop()
+        except asyncio.InvalidStateError:
+            # Rare Playwright shutdown race on Windows worker threads.
+            pass
+        except Exception:
+            pass
 
 
-def scrape_cex_prices(
-    search_text: str,
-    max_results: int = 100,
+def scan_cex_by_group_titles(
+    filtered_json_path: str,
     browser_mode: str = "chrome_persistent",
     browser_profile_dir: str = "",
     interactive_browser: bool = False,
     challenge_timeout: int = 0,
-) -> List[Dict[str, Any]]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
-    url = f"https://uk.webuy.com/search?stext={quote_plus(search_text)}"
-
+    max_scroll_rounds: int = 12,
+) -> Dict[str, Any]:
     try:
-        response = requests.get(url, headers=headers, timeout=25)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
+        asyncio.get_running_loop()
+        has_running_loop = True
+    except RuntimeError:
+        has_running_loop = False
 
-        items: List[Dict[str, Any]] = []
-
-        for anchor in soup.select("a[href]"):
-            href = (anchor.get("href") or "").strip()
-            if not href:
-                continue
-
-            text = " ".join(anchor.get_text(" ", strip=True).split())
-            if not text or len(text) < 5:
-                continue
-
-            price_match = re.search(r"£\s?\d[\d,]*(?:\.\d{1,2})?", text)
-            if not price_match and anchor.parent:
-                parent_text = " ".join(anchor.parent.get_text(" ", strip=True).split())
-                price_match = re.search(r"£\s?\d[\d,]*(?:\.\d{1,2})?", parent_text)
-            if not price_match:
-                continue
-
-            price_value = parse_price(price_match.group(0))
-            if price_value is None:
-                continue
-
-            name = str(anchor.get("title")) if anchor.get("title") else text
-            full_url = href if href.startswith("http") else f"https://uk.webuy.com{href}"
-            items.append(
-                {
-                    "name": name.strip(),
-                    "price": round(price_value, 2),
-                    "url": full_url,
-                    "source": "html",
-                }
+    if has_running_loop:
+        # Playwright sync API cannot be started inside an active asyncio loop.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                _scan_cex_by_group_titles_impl,
+                filtered_json_path,
+                browser_mode,
+                browser_profile_dir,
+                interactive_browser,
+                challenge_timeout,
+                max_scroll_rounds,
             )
+            return future.result()
 
-        items.extend(extract_cex_records_from_next_data(soup))
-        deduped = dedupe_items_by_name_price(items, max_results=max_results)
-        if deduped:
-            return deduped
-    except requests.RequestException:
-        pass
-
-    return scrape_cex_prices_with_browser(
-        search_text=search_text,
-        max_results=max_results,
+    return _scan_cex_by_group_titles_impl(
+        filtered_json_path=filtered_json_path,
         browser_mode=browser_mode,
         browser_profile_dir=browser_profile_dir,
         interactive_browser=interactive_browser,
         challenge_timeout=challenge_timeout,
+        max_scroll_rounds=max_scroll_rounds,
     )

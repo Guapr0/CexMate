@@ -294,24 +294,18 @@ if submitted:
 
     payload = response.json()
     counts = payload.get("counts", {})
-    pipeline = payload.get("pipeline", {})
     codex_meta = payload.get("codex", {})
-    is_cex_enabled = pipeline.get("cex_enabled", False)
+    cex_meta = payload.get("cex", {})
     results = payload.get("results", [])
-    opportunities = payload.get("opportunities", [])
     files = payload.get("files", {})
 
     push_update(f"{counts.get('facebook_matches', 0)} matching products found.")
-    if is_cex_enabled:
-        push_update(f"{counts.get('cex_candidates', 0)} CeX candidates loaded.")
-        push_update(f"{counts.get('profitable_deals', 0)} profitable opportunities identified.")
-    push_update("Saving output files.")
     if files.get("raw_facebook_json_path"):
         push_update("Raw Facebook output saved.")
     if codex_meta.get("launched_cmd_window_organizer"):
-        push_update("Codex organizer cmd window launched (it closes automatically when done).")
+        push_update("Codex organizer cmd window launched.")
     if codex_meta.get("launched_cmd_window_filter"):
-        push_update("Codex filter cmd window launched (it closes automatically when done).")
+        push_update("Codex filter cmd window launched.")
     if files.get("organized_facebook_json_path"):
         organized_count = codex_meta.get("organized_count")
         if isinstance(organized_count, int):
@@ -326,45 +320,27 @@ if submitted:
             push_update("Filtered Facebook output saved.")
     if codex_meta and not codex_meta.get("strict_done_met", False):
         push_update("Codex finished with a non-DONE final message, but organized output validated successfully.")
+    cex_candidates = int(counts.get("cex_candidates", cex_meta.get("items_checked", 0)))
+    cex_groups_matched = int(counts.get("cex_groups_matched", cex_meta.get("groups_matched", 0)))
+    cex_groups_scanned = int(cex_meta.get("groups_scanned", 0))
+    if cex_groups_scanned > 0:
+        push_update(f"CeX scan completed ({cex_groups_scanned} groups scanned).")
+    else:
+        push_update("CeX scan completed.")
+    push_update(f"{cex_candidates} CeX candidates checked.")
+    push_update(f"{cex_groups_matched} CeX groups matched.")
+    push_update("Saving output files.")
     if files.get("deals_json_path") or files.get("deals_csv_path"):
-        push_update("Deal comparison output saved.")
+        push_update("CeX group results output saved.")
     push_update("Scan finished.")
 
     st.subheader("Scan Summary")
     c1, c2, c3 = st.columns(3)
     c1.metric("Facebook Matches", counts.get("facebook_matches", 0))
-    c2.metric("CeX Candidates", counts.get("cex_candidates", 0) if is_cex_enabled else 0)
-    c3.metric("Profitable Deals", counts.get("profitable_deals", 0) if is_cex_enabled else 0)
+    c2.metric("CeX Candidates", counts.get("cex_candidates", 0))
+    c3.metric("CeX Groups Matched", counts.get("cex_groups_matched", 0))
 
-    if is_cex_enabled and opportunities:
-        st.subheader("Top Opportunities")
-        for idx, deal in enumerate(opportunities, start=1):
-            st.markdown(f"### {idx}. {deal.get('facebook_title', 'Untitled Listing')}")
-            col_left, col_right = st.columns([1, 2])
-
-            with col_left:
-                image_url = deal.get("facebook_image")
-                if image_url:
-                    st.image(image_url, use_column_width=True)
-
-            with col_right:
-                st.write(f"Marketplace: {currency_symbol} {deal.get('facebook_price', 0):.2f}")
-                st.write(f"CeX (UK): £ {deal.get('cex_price', 0):.2f}")
-                st.write(f"Estimated profit: £ {deal.get('estimated_profit', 0):.2f}")
-                margin = deal.get("margin_percent")
-                if margin is not None:
-                    st.write(f"Margin: {margin}%")
-                st.write(f"Match score: {deal.get('match_score')}")
-                st.write(f"Facebook location: {deal.get('facebook_location', '')}")
-
-                fb_link = deal.get("facebook_link")
-                cex_link = deal.get("cex_link")
-                if fb_link:
-                    st.markdown(f"[Open Facebook Listing]({fb_link})")
-                if cex_link:
-                    st.markdown(f"[Open CeX Match]({cex_link})")
-            st.write("---")
-    elif not results:
+    if not results:
         st.info("No Facebook listings matched your filters. Try adjusting query, location, or price range.")
     else:
         st.info(f"{len(results)} Facebook listings matched. Raw results are available as JSON below.")
