@@ -9,7 +9,11 @@ from marketplace_deals.config import PROJECT_ROOT
 from marketplace_deals.cex import scan_cex_by_group_titles
 from marketplace_deals.facebook import scrape_facebook_marketplace
 from marketplace_deals.ip_info import return_ip_information as get_ip_information
-from marketplace_deals.storage import clear_output_directory, save_cex_results_json, save_raw_facebook_results
+from marketplace_deals.storage import (
+    apply_cex_results_to_filtered_json,
+    clear_output_directory,
+    save_raw_facebook_results,
+)
 from marketplace_deals.text_utils import resolve_marketplace_slug
 
 DATE_LISTED_LABELS = {
@@ -148,12 +152,12 @@ def create_app() -> FastAPI:
             challenge_timeout=manual_login_timeout,
         )
         cex_results: List[Dict[str, Any]] = cex_meta.get("results", [])
-        deal_files = save_cex_results_json(query, city_slug, cex_results)
-        saved_files.update(
-            {
-                "deals_json_path": deal_files.get("json_path", ""),
-            }
-        )
+        try:
+            cex_apply_meta = apply_cex_results_to_filtered_json(filtered_path, cex_results)
+        except Exception as exc:
+            raise HTTPException(502, f"Failed to update filtered Facebook output with CeX data: {exc}") from exc
+        cex_meta["applied_to_filtered_file"] = cex_apply_meta
+        saved_files["filtered_facebook_json_path"] = cex_apply_meta.get("json_path", filtered_path)
 
         return {
             "search": {
