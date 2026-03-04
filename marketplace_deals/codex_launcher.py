@@ -53,72 +53,63 @@ After finishing file creation, respond with exactly:
 DONE"""
 
 
-FILTER_PROMPT_TEMPLATE = """From the project root, read `output/organized_facebook_list.json`and create `output/filtered_facebook_list.json`.
+FILTER_PROMPT_TEMPLATE = """From the project root, read `output/organized_facebook_list.json` and create `output/filtered_facebook_list.json`.
 
-Apply strict filtering using these exact runtime values:
-- ProductName: "__PRODUCT_NAME__"
-- Price Min: __PRICE_MIN__
-- Price Max: __PRICE_MAX__
-- Date Listed: "__DATE_LISTED__"
-- Filtering Description: "__FILTERING_DESCRIPTION__"
+  Apply strict filtering using these exact runtime values:
+  - ProductName: "__PRODUCT_NAME__"
+  - Price Min: __PRICE_MIN__
+  - Price Max: __PRICE_MAX__
+  - Date Listed: "__DATE_LISTED__"
+  - Filtering Description: "__FILTERING_DESCRIPTION__"
 
+  FILTERING RULES
+  1. A listing passes ONLY if it satisfies ALL provided filters.
+  2. If a listing fails even one filter, do not move that listing to the new file.
+  3. Do NOT modify any listing fields or values.
+  4. Move passed listing objects exactly as they appear in the input.
 
-FILTERING RULES
-1. A listing passes ONLY if it satisfies ALL provided filters.
-2. If a listing fails even one filter, do not move that listing to the new file..
-3. Do NOT modify any listing fields or values.
-4. Move passed listing objects exactly as they appear in the input.
+  GROUPING RULES
+  After filtering, group the remaining listings by EXACT equality of the following fields. Listings must match all six fields exactly to be placed in the same group:
+  - brand
+  - model
+  - variant
+  - storage_gb
+  - ram_gb
+  - grade
 
+  GROUP TITLE FORMAT
+  Format:
+  brand + model + variant + storage_gb + "GB, " + ram_gb + "GB RAM, " + grade
 
-GROUPING RULES
-After filtering, group the remaining listings by EXACT equality of:
+  Examples:
+  - Apple iPhone 15 Pro 128GB, A
+  - Samsung Galaxy S23 Ultra 512GB 12GB RAM, B
 
-- brand
-- model
-- variant
-- storage_gb
-- ram_gb
-- grade
+  Rules:
+  - If `ram_gb` is NOT null, include `" ram_gb GB RAM"` after the storage value.
+  - If `ram_gb` is null, do NOT include any RAM text in the title.
+  - If `variant` is null, omit it from the title.
 
-Listings must match all six fields exactly to be in the same group.
+  OUTPUT STRUCTURE
+  The output must be a JSON array of objects in this format:
 
+  [
+    {
+      "group_title": "Apple iPhone 15 256GB, A",
+      "listings": [
+        { full original listing object },
+        { full original listing object },
+      ]
+    }
+  ]
 
-GROUP TITLE FORMAT
-Format:
-brand + model + variant + storage_gb + "GB, " + grade
+  Do not include any extra fields.
+  Do not include explanations.
+  Do not include logs.
+  Do not include comments.
 
-Examples:
-- Apple iPhone 15 256GB, A
-- Apple iPhone 15 Pro 128GB, A
-
-Title defaults:
-- If storage_gb is null → use 256 in title only
-- If grade is null → use B in title only
-
-IMPORTANT:
-- Do NOT modify the listing objects.
-- Defaults apply ONLY to group_title.
-
-
-OUTPUT STRUCTURE
-The output must be a JSON array of objects in this format:
-
-[
-  {
-    "group_title": "Apple iPhone 15 256GB, A",
-    "listings": [
-      { full original listing object },
-      { full original listing object },
-    ]
-  }
-]
-
-Do not include any extra fields.
-Do not include explanations.
-Do not include logs.
-Do not include comments.
-
-After writing the file, respond with exactly: DONE"""
+  After writing the file, respond with exactly: 
+  DONE"""
 
 
 def _validate_json_output(path: Path, require_array_root: bool = True) -> tuple[bool, int, str]:
