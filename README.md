@@ -1,85 +1,74 @@
-# Facebook Marketplace Scraper + Codex Organizer
+# Facebook Marketplace Scanner (Codex + CeX)
 
-This app scans Facebook Marketplace listings for a product query, saves raw results, and then runs Codex to create a normalized JSON file.
+This project scans Facebook Marketplace listings, normalizes/groups them with Codex, checks CeX matches, and produces enriched JSON + HTML outputs.
 
-## What It Does
+## Current Pipeline
 
-- Scrapes Facebook Marketplace with your selected filters (location, radius, sort, date, price, condition).
-- Saves raw listings to `output/raw_facebook_list.json`.
-- Runs Codex organizer to create `output/organized_facebook_list.json`.
-- Shows progress updates in the Streamlit UI.
-- Opens a separate live organizer window for progress and closes it automatically when finished.
+1. Scrape Facebook Marketplace using filters (location, radius, sort, date listed, condition, price).
+2. Save raw listings to `output/raw_facebook_list.json`.
+3. Run Codex organizer to create `output/organized_facebook_list.json`.
+4. Run Codex filter/grouping stage to create `output/filtered_facebook_list.json`.
+5. Scan CeX by filtered group titles and write `market_price` + `cex_link` back into the filtered JSON.
+6. Generate an HTML report from the filtered/enriched file.
 
-## Important Runtime Behavior
+## Runtime Behavior
 
-- On every `/find_phone_deals` run, the app clears everything inside `output/` first.
-- This ensures each run starts clean and you only keep the latest run outputs.
+- Each `/find_phone_deals` run clears everything in `output/` first.
+- Default browser mode is Chrome persistent profile: `.browser_profile/chrome_marketplace`.
+- Codex runs two stages (organizer + filter) and opens status CMD windows for each stage.
 
 ## Requirements
 
-- Windows (recommended for current launch scripts)
-- Python 3.10+ (3.11 recommended)
+- Python 3.10+
 - Google Chrome installed
-- Codex CLI installed and available in `PATH` (`codex --version` should work)
+- Codex CLI installed and on `PATH` (`codex --version`)
+- Python packages in `requirements.txt`
 
-Install Python dependencies:
+Install dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
-## How To Run
+Note: Chromium install is needed for Playwright Chromium mode and `/return_ip_information`.
 
-From project root:
+## Run
 
-```powershell
-cd C:\Users\8-Muso-8\Downloads\facebook-marketplace-scraper-main\facebook-marketplace-scraper-main
-```
-
-Start API (terminal 1):
+From the project root:
 
 ```powershell
 python app.py
 ```
 
-Start UI (terminal 2):
+In a second terminal:
 
 ```powershell
 streamlit run gui.py
 ```
 
-Open the Streamlit URL shown in terminal 2 (usually `http://localhost:8501`).
-
-## Typical Flow
-
-1. Fill search filters in UI.
-2. Click `Start Scan`.
-3. Chrome opens for Marketplace scraping (login/session as needed).
-4. Raw output is saved.
-5. Codex organizer runs and writes organized output.
-6. Download files from the UI output section.
+Open Streamlit (usually `http://localhost:8501`).
 
 ## Output Files
 
 - `output/raw_facebook_list.json`
 - `output/organized_facebook_list.json`
-- `output/filtered_facebook_list.json`
+- `output/filtered_facebook_list.json` (grouped listings, later enriched with CeX fields)
 - `output/facebook_deals_report.html`
+
+## API Endpoints
+
+- `GET /find_phone_deals` - full pipeline (Facebook scrape -> Codex -> CeX -> HTML report).
+- `GET /crawl_facebook_marketplace` - scrape-only endpoint.
+- `GET /return_ip_information` - IP information lookup via Playwright + parsing.
 
 ## Troubleshooting
 
-- `Failed to reach API` / WinError 10061:
-  - API is not running on `127.0.0.1:8000`.
-  - Start `python app.py` first.
+- `Failed to reach API` / connection refused:
+  - Start API first with `python app.py`.
 - `codex executable not found`:
-  - Install Codex CLI and ensure `codex` is on `PATH`.
-- No organizer output:
-  - Check the API error message; organizer stdout tail is included on failures.
-
-## Can I Minimize Chrome/CMD While It Runs?
-
-Yes. Minimizing windows does not stop the process.
-
-- Keep the API terminal and Streamlit terminal running.
-- Do not close Chrome if the scraper still needs it.
-- The organizer status window will close itself automatically when the run is complete.
+  - Install Codex CLI and ensure it is available to the API process `PATH`.
+- `Could not open Chrome persistent profile`:
+  - Close other Chrome windows using the same profile, or switch profile directory/browser mode.
+- CeX challenge errors:
+  - Re-run with interactive browser enabled so you can solve the challenge in the opened browser.
