@@ -1,4 +1,4 @@
-# Facebook Marketplace Scanner (Codex + CeX)
+# Facebook Marketplace Scanner
 
 This project scans Facebook Marketplace listings, normalizes/groups them with Codex, checks CeX matches, and produces enriched JSON + HTML outputs.
 
@@ -11,27 +11,73 @@ This project scans Facebook Marketplace listings, normalizes/groups them with Co
 5. Scan CeX by filtered group titles and write `market_price` + `cex_link` back into the filtered JSON.
 6. Generate an HTML report from the filtered/enriched file.
 
-## Runtime Behavior
-
-- Each `/find_phone_deals` run clears everything in `output/` first.
-- Default browser mode is Chrome persistent profile: `.browser_profile/chrome_marketplace`.
-- Codex runs two stages (organizer + filter) and opens status CMD windows for each stage.
-
 ## Requirements
 
 - Python 3.10+
 - Google Chrome installed
-- Codex CLI installed and on `PATH` (`codex --version`)
+- Node.js + npm (for Codex CLI installation)
 - Python packages in `requirements.txt`
 
-Install dependencies:
+## Prerequisites (Before Running Setup.ps1)
+
+1. Install Python 3.10+ (3.11 recommended):
+   - https://www.python.org/downloads/windows/
+   - During install, enable **Add python.exe to PATH**.
+   - `pip` is included with Python.
+
+2. Install Node.js LTS (includes `npm`):
+   - https://nodejs.org/en/download
+
+3. Install Google Chrome:
+   - https://www.google.com/chrome/
+
+4. If PowerShell blocks scripts, run this in the same terminal:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+```
+
+Quick checks:
+
+```powershell
+python --version
+python -m pip --version
+npm --version
+```
+
+## One-Shot Setup (Windows PowerShell)
+
+Run from project root:
+
+```powershell
+.\setup.ps1
+```
+
+This installs:
+
+- Python dependencies from `requirements.txt`
+- Playwright Chromium browser
+- Codex CLI (`npm install -g @openai/codex`)
+
+Optional (skip Codex CLI install):
+
+```powershell
+.\setup.ps1 -SkipCodex
+```
+
+Manual equivalent:
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m playwright install chromium
+npm install -g @openai/codex
 ```
 
-Note: Chromium install is needed for Playwright Chromium mode and `/return_ip_information`.
+After install, verify:
+
+```powershell
+codex --version
+```
 
 ## Run
 
@@ -44,7 +90,7 @@ python app.py
 In a second terminal:
 
 ```powershell
-streamlit run gui.py
+py -m streamlit run gui.py
 ```
 
 Open Streamlit (usually `http://localhost:8501`).
