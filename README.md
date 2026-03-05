@@ -63,6 +63,8 @@ Open the Streamlit URL shown in terminal 2 (usually `http://localhost:8501`).
 
 - `output/raw_facebook_list.json`
 - `output/organized_facebook_list.json`
+- `output/filtered_facebook_list.json`
+- `output/facebook_deals_report.html`
 
 ## Troubleshooting
 

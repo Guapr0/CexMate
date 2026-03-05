@@ -318,6 +318,8 @@ if submitted:
             push_update(f"Filtered Facebook output saved ({filtered_count} items).")
         else:
             push_update("Filtered Facebook output saved.")
+    if files.get("facebook_listings_html_path"):
+        push_update("Facebook listings HTML report saved.")
     if codex_meta and not codex_meta.get("strict_done_met", False):
         push_update("Codex finished with a non-DONE final message, but organized output validated successfully.")
     cex_candidates = int(counts.get("cex_candidates", cex_meta.get("items_checked", 0)))
@@ -341,6 +343,7 @@ if submitted:
     raw_json_path = files.get("raw_facebook_json_path")
     organized_json_path = files.get("organized_facebook_json_path")
     filtered_json_path = files.get("filtered_facebook_json_path")
+    facebook_listings_html_path = files.get("facebook_listings_html_path")
     deals_json_path = files.get("deals_json_path")
     deals_csv_path = files.get("deals_csv_path")
 
@@ -350,6 +353,8 @@ if submitted:
         st.write(f"Organized Facebook JSON: {organized_json_path}")
     if filtered_json_path:
         st.write(f"Filtered Facebook JSON: {filtered_json_path}")
+    if facebook_listings_html_path:
+        st.write(f"Facebook Listings HTML: {facebook_listings_html_path}")
     if deals_json_path:
         st.write(f"Deals JSON: {deals_json_path}")
     if deals_csv_path:
@@ -380,6 +385,15 @@ if submitted:
                 data=ff,
                 file_name=Path(filtered_json_path).name,
                 mime="application/json",
+            )
+
+    if facebook_listings_html_path and Path(facebook_listings_html_path).exists():
+        with open(facebook_listings_html_path, "rb") as hf:
+            st.download_button(
+                label="Download Facebook Listings HTML",
+                data=hf,
+                file_name=Path(facebook_listings_html_path).name,
+                mime="text/html",
             )
 
     if deals_json_path and Path(deals_json_path).exists():

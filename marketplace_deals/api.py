@@ -158,6 +158,9 @@ def create_app() -> FastAPI:
             raise HTTPException(502, f"Failed to update filtered Facebook output with CeX data: {exc}") from exc
         cex_meta["applied_to_filtered_file"] = cex_apply_meta
         saved_files["filtered_facebook_json_path"] = cex_apply_meta.get("json_path", filtered_path)
+        html_report_path = cex_apply_meta.get("html_path", "")
+        if html_report_path:
+            saved_files["facebook_listings_html_path"] = html_report_path
 
         return {
             "search": {
