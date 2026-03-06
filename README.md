@@ -81,6 +81,18 @@ codex --version
 
 ## Run
 
+One-click launcher (recommended):
+
+```powershell
+.\run.bat
+```
+
+This opens two terminal windows automatically:
+- API (`python app.py`)
+- Streamlit UI (`python -m streamlit run gui.py`)
+
+Manual run:
+
 From the project root:
 
 ```powershell
