@@ -17,6 +17,7 @@ from marketplace_deals.text_utils import normalize_text
 
 CURRENCY_PATTERN = re.compile(r"[£$€]\s?\d[\d,]*(?:\.\d{1,2})?")
 GB_PATTERN = re.compile(r"(\d+)\s*gb", re.IGNORECASE)
+TB_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*tb", re.IGNORECASE)
 RAM_PATTERN = re.compile(r"(\d+)\s*gb\s*ram", re.IGNORECASE)
 GRADE_PATTERN = re.compile(r",\s*([ABC])\s*$", re.IGNORECASE)
 
@@ -98,18 +99,31 @@ def _parse_group_title_constraints(group_title: str) -> Dict[str, Any]:
     if ram_match:
         ram_gb = int(ram_match.group(1))
 
-    gb_values = [int(match.group(1)) for match in GB_PATTERN.finditer(group_title)]
     storage_gb: Optional[int] = None
-    if gb_values:
-        if ram_gb is None:
-            storage_gb = gb_values[0]
-        else:
-            for value in gb_values:
-                if value != ram_gb:
-                    storage_gb = value
-                    break
-            if storage_gb is None and gb_values:
+    tb_values_gb: List[int] = []
+    for match in TB_PATTERN.finditer(group_title):
+        try:
+            tb_raw = float(match.group(1))
+        except ValueError:
+            continue
+        if tb_raw <= 0:
+            continue
+        tb_values_gb.append(int(round(tb_raw * 1024)))
+
+    if tb_values_gb:
+        storage_gb = tb_values_gb[0]
+    else:
+        gb_values = [int(match.group(1)) for match in GB_PATTERN.finditer(group_title)]
+        if gb_values:
+            if ram_gb is None:
                 storage_gb = gb_values[0]
+            else:
+                for value in gb_values:
+                    if value != ram_gb:
+                        storage_gb = value
+                        break
+                if storage_gb is None and gb_values:
+                    storage_gb = gb_values[0]
 
     grade = ""
     grade_match = GRADE_PATTERN.search(group_title)
@@ -120,12 +134,13 @@ def _parse_group_title_constraints(group_title: str) -> Dict[str, Any]:
     cleaned_title = re.sub(r",\s*[ABC]\s*$", " ", cleaned_title, flags=re.IGNORECASE)
     cleaned_title = re.sub(r"\b\d+\s*gb\s*ram\b", " ", cleaned_title, flags=re.IGNORECASE)
     cleaned_title = re.sub(r"\b\d+\s*gb\b", " ", cleaned_title, flags=re.IGNORECASE)
+    cleaned_title = re.sub(r"\b\d+(?:\.\d+)?\s*tb\b", " ", cleaned_title, flags=re.IGNORECASE)
 
     normalized = normalize_text(cleaned_title)
     tokens = [token for token in normalized.split() if token]
     filtered_tokens: List[str] = []
     for token in tokens:
-        if token in {"gb", "ram", "grade", "cash", "trade", "in", "for"}:
+        if token in {"gb", "tb", "ram", "grade", "cash", "trade", "in", "for"}:
             continue
         if token in {"a", "b", "c"}:
             continue
@@ -314,8 +329,18 @@ def _passes_filters(candidate_title: str, constraints: Dict[str, Any]) -> Tuple[
             return False, round(token_ratio, 3)
 
     storage_gb = constraints.get("storage_gb")
-    if storage_gb is not None and re.search(rf"\b{int(storage_gb)}\s*gb\b", title_lower) is None:
-        return False, round(token_ratio, 3)
+    if storage_gb is not None:
+        storage_value = int(storage_gb)
+        storage_match = re.search(rf"\b{storage_value}\s*gb\b", title_lower) is not None
+        if not storage_match and storage_value >= 1024:
+            tb_value = storage_value / 1024
+            if float(tb_value).is_integer():
+                tb_text = str(int(tb_value))
+            else:
+                tb_text = f"{tb_value:.3f}".rstrip("0").rstrip(".")
+            storage_match = re.search(rf"\b{re.escape(tb_text)}\s*tb\b", title_lower) is not None
+        if not storage_match:
+            return False, round(token_ratio, 3)
 
     ram_gb = constraints.get("ram_gb")
     if ram_gb is not None and re.search(rf"\b{int(ram_gb)}\s*gb\b", title_lower) is None:

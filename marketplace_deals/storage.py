@@ -75,6 +75,18 @@ def _format_number(value: Any, suffix: str = "") -> str:
     return f"{numeric:,.2f}{suffix}"
 
 
+def _format_storage(value: Any) -> str:
+    numeric = _safe_number(value)
+    if numeric is None:
+        return "N/A"
+    if numeric >= 1024:
+        tb_value = numeric / 1024
+        if float(tb_value).is_integer():
+            return f"{int(tb_value)} TB"
+        return f"{tb_value:.2f}".rstrip("0").rstrip(".") + " TB"
+    return _format_number(numeric, " GB")
+
+
 def _format_bool_or_text(value: Any) -> str:
     if value is None:
         return "N/A"
@@ -117,7 +129,7 @@ def _render_listing_row(listing: Dict[str, Any], index: int) -> str:
         ("", _format_bool_or_text(listing.get("model")), False),
         ("", _format_bool_or_text(listing.get("variant")), False),
         ("", _format_bool_or_text(listing.get("color")), False),
-        ("spec", _format_number(listing.get("storage_gb"), " GB"), False),
+        ("spec", _format_storage(listing.get("storage_gb")), False),
         ("spec", _format_number(listing.get("ram_gb"), " GB"), False),
         ("spec", _format_bool_or_text(listing.get("dual_sim")), False),
         ("spec", _format_number(listing.get("battery_health_percent"), "%"), False),

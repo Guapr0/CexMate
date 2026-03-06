@@ -85,12 +85,14 @@ FILTER_PROMPT_TEMPLATE = """From the project root, read `output/organized_facebo
 
   Examples:
   - Apple iPhone 15 Pro 128GB, A
+  - Apple iPhone 15 Pro Max 1TB, A
   - Samsung Galaxy S23 Ultra 512GB 12GB RAM, B
 
   Rules:
   - If `ram_gb` is NOT null, include `" ram_gb GB RAM"` after the storage value.
   - If `ram_gb` is null, do NOT include any RAM text in the title.
   - If `variant` is null, omit it from the title.
+  - If `storage_gb` is 1024 or greater, convert the storage value to TB for the group title because values that large are not ideal to display in GB. Convert the storage_gb by dividing by 1024 (e.g., 1024GB → 1TB, 2048GB → 2TB). When this occurs, the storage unit in the group title must automatically change from "GB" to "TB". Do NOT modify the `storage_gb` field in the listing objects; this conversion applies only to the displayed value in `group_title`.
 
   OUTPUT STRUCTURE
   The output must be a JSON array of objects in this format:
@@ -110,7 +112,7 @@ FILTER_PROMPT_TEMPLATE = """From the project root, read `output/organized_facebo
   Do not include logs.
   Do not include comments.
 
-  After writing the file, respond with exactly: 
+  After writing the file, respond with exactly:
   DONE"""
 
 
