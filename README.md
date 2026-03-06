@@ -107,6 +107,25 @@ py -m streamlit run gui.py
 
 Open Streamlit (usually `http://localhost:8501`).
 
+## Special Note (Before Scanning)
+
+Before running scans, make sure all of the following are true:
+
+- Facebook is logged in.
+- CeX is logged in.
+- Cookies are accepted on both Facebook and CeX.
+- CeX "Trade in for Cash" option is visible/enabled when checking results.
+- Codex CLI is logged in.
+- Codex model is set to `GPT-5.3 Codex High` (Codex High).
+- Codex permission mode is set to `Default'.
+- Codex allowed to run in the project directory.
+
+Important CeX/Cloudflare warning:
+
+- CeX is behind Cloudflare. If too many requests happen that behavior will look like a bot, CeX may temporarily block the IP.
+- To reduce block risk, run focused scans (specific product/model filters) so thus CeX searching is minimized.
+- If blocked, it is often temporary. You can retry later or use a VPN to change your IP.
+
 ## Output Files
 
 - `output/raw_facebook_list.json`
